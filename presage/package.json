@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node --env-file=../.env capture.mjs",
     "session": "node --env-file=../.env session.mjs",
-    "test-file": "node --env-file=../.env test-file.mjs"
+    "test-file": "node --env-file=../.env test-file.mjs",
+    "eye-check": "node --env-file=../.env eye-openness-check.mjs"
   },
   "dependencies": {
     "@smartspectra/node-sdk": "3.3.0"

@@ -107,13 +107,94 @@ TODO — decide once back/front/api teammates weigh in: does this Electron proce
 to the existing FastAPI backend (POST readings / websocket), or does it stay local and
 only the end-of-session report gets sent to the backend?
 
+## Drowsiness / wake-up detection
+
+[presage/drowsiness.mjs](../presage/drowsiness.mjs) — live, incremental
+(NOT a batch end-of-section summary like stress.mjs, since "wake the user
+up" only works as a real-time trigger). Uses **PERCLOS** (percentage of
+eyelid closure over time) — the standard heuristic in driver-drowsiness
+systems — off the same `face.blinking` signal already used for blink rate:
+- **microsleep**: a single continuous closure at/above `microsleepThresholdSec`
+  (default 1.0s — well past a normal ~100-400ms blink) fires immediately.
+- **sustained-drowsiness**: eyes closed at/above `perclosThreshold` (default
+  40%) of a trailing `perclosWindowSec` window (default 60s), even without
+  one dramatically long closure.
+
+Wired into [presage/session.mjs](../presage/session.mjs): fires live during
+the section (terminal bell + banner — a placeholder for a real OS
+notification/sound in the eventual Electron app), and alert count rolls into
+the end-of-section summary as `drowsinessAlertCount`.
+
+**Update (2026-09-12): `blinking.detected` didn't work, replaced with EAR.**
+The original assumption — that `blinking.detected` stays `true` for a whole
+closure — tested false: deliberately closing eyes for 3+ seconds during a
+live session produced 0 drowsiness alerts. Root-caused by dumping the raw
+signal (`DEBUG_BLINK`, since removed) — the flag doesn't behave as a
+sustained "eyes closed" state reliably enough to build PERCLOS on.
+
+Replaced with **Eye Aspect Ratio (EAR)** computed from `face.landmarks` (see
+[presage/eye.mjs](../presage/eye.mjs)) — a standard technique using 6
+eye-contour points per eye. This required assuming SmartSpectra's 478
+landmarks follow MediaPipe FaceMesh's standard topology (undocumented by
+Presage, but 478 = 468 base + 10 iris points is exactly MediaPipe's
+convention). **Confirmed empirically** via
+[presage/eye-openness-check.mjs](../presage/eye-openness-check.mjs)
+(`npm run eye-check`): a live open/closed-eye test showed a clean, clear
+separation — open-eye baseline ~0.25-0.42, closed/blink dips ~0.03-0.09.
+`drowsiness.mjs` now takes a generic `eyesClosed` boolean (thresholded from
+EAR at `EAR_CLOSED_THRESHOLD = 0.15`) instead of the SDK's blink flag
+directly — it doesn't know or care where the signal comes from.
+
+**Update (2026-09-12, same day): fixed EAR threshold broke on real usage —
+two bugs found via live testing, both fixed.**
+
+1. **Alert spam**: `drowsinessAlertCount: 495` in a 50-second real test — the
+   `alerted` flag reset on any single momentary "eyes open" sample, so signal
+   flicker near the threshold caused near-continuous re-firing. Fixed with a
+   time-based cooldown (`alertCooldownSec`, default 20s) instead: a
+   still-drowsy state now re-alerts periodically rather than spamming every
+   tick. Verified: a synthetic 30s open/closed flicker test now produces 2
+   alerts instead of hundreds; genuine microsleep detection unaffected.
+
+2. **Fixed EAR threshold breaks under downward gaze**: the same real test
+   showed `~60% closed over window` sustained for most of a session where
+   the user only closed their eyes briefly. Root cause, confirmed by asking
+   the user directly: they were looking down at their screen/keyboard most
+   of the time (as any real study session would involve) — looking down
+   narrows the visible eye geometrically even when genuinely open, so a
+   **fixed** EAR cutoff (`0.15`) systematically misreads normal downward
+   gaze as closed. This is a real constraint for the actual product, not a
+   one-off test artifact — users will always be looking at their screen, not
+   the camera.
+
+   Fixed with `createAdaptiveEyeClosureDetector()` in
+   [presage/eye.mjs](../presage/eye.mjs): tracks a rolling high-percentile
+   ("resting open") EAR baseline per session instead of a fixed number, and
+   flags closure as a large *relative* drop from that baseline. Self-
+   calibrating — no separate setup step, works whatever the head/gaze angle
+   settles into. Verified via a synthetic test simulating a low, stable
+   "looking down" baseline (~0.12, below the old fixed threshold): 0 false
+   positives while "looking down," 100% catch rate on a simulated genuine
+   2s closure, 0 false positives after reopening at the same low baseline.
+
+**Re-validated live (2026-09-12) after both fixes**: 1-minute real session,
+looking at the screen normally and deliberately closing eyes a few times —
+`drowsinessAlertCount: 3` (vs. 495 before the cooldown fix), with a genuine
+sane closure duration reported (`microsleep, eyes closed 1.2s, 74% window`)
+instead of the old `0.0s` artifact. No spam, no obvious false positives from
+normal screen-gazing.
+
+Still placeholder/unvalidated: `closedRatio` (0.5), `baselinePercentile`
+(0.9), `alertCooldownSec` (20s), and the PERCLOS window/share thresholds are
+reasonable-guess defaults, not tuned against a range of real users/lighting/
+camera setups.
+
 ## Open questions / TODO
 
 - [ ] Decide backend integration point (see above).
-- [ ] Define stress/drowsiness thresholds from face-only signals (expression
-      distribution over time, blink rate/duration for drowsiness, landmark
-      position for head-nod/sleep detection). No HRV available now that cardio
-      is dropped — stress reads purely from expression + blink + landmarks.
+- [ ] Validate drowsiness detection against a real closed-eyes test (see above).
+- [ ] Tune drowsiness thresholds (currently placeholder defaults, same
+      caveat as the stress thresholds) once validated.
 - [ ] Report format handed to the LLM factory for the end-of-session summary.
 - [ ] Run `presage/capture.mjs` interactively (real Ctrl+C, not a background
       kill) to confirm clean shutdown — a `kInvalidState` error appeared once
