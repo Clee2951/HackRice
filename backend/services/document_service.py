@@ -2,6 +2,7 @@ from io import BytesIO
 from pathlib import Path
 from fastapi import HTTPException
 from pypdf import PdfReader
+from docx import Document
 from backend.core.config import settings
 from backend.ai import prompts
 from backend.schemas.study import ObjectiveSet
@@ -28,8 +29,13 @@ def extract_pages(filename, data):
         elif suffix in {".txt", ".md"}:
             pages = [{"page": 1, "text": data.decode("utf-8-sig")}]
             media = "text/plain"
+        elif suffix == ".docx":
+            doc = Document(BytesIO(data))
+            full_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+            pages = [{"page": 1, "text": full_text}]
+            media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         else:
-            raise HTTPException(415, "Supported formats: text-based PDF, UTF-8 .txt, .md")
+            raise HTTPException(415, "Supported formats: .docx, text-based PDF, UTF-8 .txt, .md")
     except HTTPException:
         raise
     except Exception:
