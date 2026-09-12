@@ -12,6 +12,7 @@ npm-debug.log*
 __pycache__/
 *.pyc
 .venv/
+.venv-local/
 venv/
 
 # OS

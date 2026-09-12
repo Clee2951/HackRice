@@ -33,3 +33,22 @@ class ChatMessage(Base):
     session_id = Column(Integer, ForeignKey("studysession.id"), nullable=False, index=True)
     role = Column(String, nullable=False)
     content = Column(String, nullable=False)
+
+class WellbeingReading(Base):
+    # A per-round stress/drowsiness summary reported by the Presage capture
+    # client (see presage/session.mjs) after a study/review timer ends.
+    # Deliberately a new table rather than new columns on StudySession -- see
+    # the "Existing table changes need migrations" note in main.py; this
+    # keeps the addition safe against the already-committed study.db.
+    id = Column(Integer, primary_key=True)
+    session_id = Column(Integer, ForeignKey("studysession.id"), nullable=False, index=True)
+    round_number = Column(Integer, nullable=False)
+    avg_stress = Column(Float, nullable=True)
+    pct_high_stress = Column(Float, nullable=True)
+    longest_high_stress_run_sec = Column(Float, nullable=False, default=0)
+    blink_rate_per_min = Column(Float, nullable=True)
+    drowsiness_alert_count = Column(Integer, nullable=False, default=0)
+    extend_break = Column(Boolean, nullable=False, default=False)
+    extra_break_minutes = Column(Integer, nullable=False, default=0)
+    created_at = Column(Float, default=time.time, nullable=False)
+    __table_args__ = (UniqueConstraint("session_id", "round_number"),)

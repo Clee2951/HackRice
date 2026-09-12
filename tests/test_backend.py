@@ -123,6 +123,47 @@ def test_full_cycle_resume_and_idempotency(setup):
     assert client.post(url+'/resume', headers=headers).status_code == 409
 
 
+def test_wellbeing_extends_break(setup):
+    client, factory, ai = setup
+    headers = account(client)
+    did = document(client, headers)
+    sid = session(client, headers, did)
+    url = f'/api/v1/sessions/{sid}'
+    expire(factory, sid)
+    assert client.post(url+'/advance', headers=headers).json()['phase'] == 'recall'
+    report = {'avg_stress': 62.5, 'pct_high_stress': 45.0, 'longest_high_stress_run_sec': 310.0,
+              'blink_rate_per_min': 22.0, 'drowsiness_alert_count': 2, 'extend_break': True, 'extra_break_minutes': 5}
+    posted = client.post(url+'/wellbeing', headers=headers, json=report)
+    assert posted.status_code == 200, posted.text
+    assert posted.json()['round_number'] == 1 and posted.json()['extra_break_minutes'] == 5, posted.text
+    assert client.get(url+'/wellbeing', headers=headers).json()[0]['round_number'] == 1
+    # Re-reporting the same round upserts rather than erroring or duplicating.
+    client.post(url+'/wellbeing', headers=headers, json={**report, 'extra_break_minutes': 5})
+    assert len(client.get(url+'/wellbeing', headers=headers).json()) == 1
+    request = {'submission_id': str(uuid4()), 'text': 'V = IR'}
+    assert client.post(url+'/recall', headers=headers, json=request).status_code == 200
+    result = client.post(url+'/advance', headers=headers).json()  # feedback -> break
+    assert result['phase'] == 'break'
+    # session() sets break_seconds=5; the reported +5 minutes adds 300s on top.
+    assert 300 <= result['remaining_seconds'] <= 306
+
+
+def test_wellbeing_without_extend_flag_does_not_extend_break(setup):
+    client, factory, ai = setup
+    headers = account(client)
+    did = document(client, headers)
+    sid = session(client, headers, did)
+    url = f'/api/v1/sessions/{sid}'
+    expire(factory, sid)
+    client.post(url+'/advance', headers=headers)
+    client.post(url+'/wellbeing', headers=headers, json={'extend_break': False, 'extra_break_minutes': 0})
+    request = {'submission_id': str(uuid4()), 'text': 'V = IR'}
+    client.post(url+'/recall', headers=headers, json=request)
+    result = client.post(url+'/advance', headers=headers).json()
+    assert result['phase'] == 'break'
+    assert result['remaining_seconds'] <= 6
+
+
 def test_ownership_and_auth(setup):
     client, _, _ = setup
     owner = account(client)

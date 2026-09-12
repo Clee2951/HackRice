@@ -46,3 +46,14 @@ class RecallInput(StrictModel):
 
 class ChatInput(StrictModel):
     message: str = Field(min_length=1, max_length=4000)
+
+class WellbeingReport(StrictModel):
+    # Matches the JSON shape presage/session.mjs already prints at the end
+    # of a study/review section (summarizeSection() + drowsinessAlertCount).
+    avg_stress: float | None = Field(default=None, ge=0, le=100)
+    pct_high_stress: float | None = Field(default=None, ge=0, le=100)
+    longest_high_stress_run_sec: float = Field(default=0, ge=0)
+    blink_rate_per_min: float | None = Field(default=None, ge=0)
+    drowsiness_alert_count: int = Field(default=0, ge=0)
+    extend_break: bool = False
+    extra_break_minutes: int = Field(default=0, ge=0, le=60)
