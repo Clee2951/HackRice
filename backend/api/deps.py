@@ -1,45 +1,23 @@
-from typing import Generator
-
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
-from jose import jwt
-from pydantic import ValidationError
-from sqlalchemy.orm import Session
-
-from backend.core import security
+from jose import jwt, JWTError
 from backend.core.config import settings
 from backend.db.session import SessionLocal
-from backend.models import user as user_model
-from backend.schemas import token as token_schema
-from backend.crud import user as user_crud
+from backend.models.user import User
 
-reusable_oauth2 = OAuth2PasswordBearer(
-    tokenUrl=f"{settings.API_V1_STR}/auth/login/access-token"
-)
+oauth2 = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login/access-token")
 
-
-def get_db() -> Generator:
-    try:
-        db = SessionLocal()
+def get_db():
+    with SessionLocal() as db:
         yield db
-    finally:
-        db.close()
 
-
-def get_current_user(
-    db: Session = Depends(get_db), token: str = Depends(reusable_oauth2)
-) -> user_model.User:
+def get_current_user(token: str = Depends(oauth2), db=Depends(get_db)):
     try:
-        payload = jwt.decode(
-            token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
-        )
-        token_data = token_schema.TokenPayload(**payload)
-    except (jwt.JWTError, ValidationError):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Could not validate credentials",
-        )
-    user = user_crud.get(db, id=token_data.sub)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id = int(payload["sub"])
+    except (JWTError, ValueError, KeyError, TypeError):
+        raise HTTPException(401, "Invalid or expired token", headers={"WWW-Authenticate": "Bearer"})
+    user = db.get(User, user_id)
+    if not user or not user.is_active:
+        raise HTTPException(401, "User unavailable")
     return user

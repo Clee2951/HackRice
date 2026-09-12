@@ -1,2 +1,0 @@
-# HackRice
-HackRice Project Reposittory
