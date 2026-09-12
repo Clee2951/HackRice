@@ -12,6 +12,7 @@ const http = require("http");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://127.0.0.1:8000";
+const NEXT_APP_URL = process.env.NEXT_APP_URL || "http://localhost:3000";
 const EXIT_PIN = process.env.EXIT_PIN || "";
 const IS_KIOSK = process.argv.includes("--kiosk");
 const TASKBAR_SCRIPT = path.join(__dirname, "taskbar.ps1");
@@ -65,7 +66,7 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
+  mainWindow.loadURL(NEXT_APP_URL);
 
   if (IS_KIOSK) {
     // Hide as soon as the window is ready.
