@@ -1,0 +1,15 @@
+{
+  "name": "hackrice-presage-capture",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone SmartSpectra (Presage) camera capture — proves live vitals metrics before wiring into the Electron/lockdown app.",
+  "scripts": {
+    "start": "node --env-file=../.env capture.mjs",
+    "session": "node --env-file=../.env session.mjs",
+    "test-file": "node --env-file=../.env test-file.mjs"
+  },
+  "dependencies": {
+    "@smartspectra/node-sdk": "3.3.0"
+  }
+}

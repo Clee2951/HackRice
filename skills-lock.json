@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "using-smartspectra": {
+      "source": "Presage-Security/SmartSpectra",
+      "sourceType": "github",
+      "skillPath": ".agents/skills/using-smartspectra/SKILL.md",
+      "computedHash": "71161ef5fe92dca3d8a9255d0aae36141214064ec125dee8f4695b5f08cae651"
+    }
+  }
+}
