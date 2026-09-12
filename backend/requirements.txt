@@ -1,0 +1,21 @@
+fastapi
+uvicorn[standard]
+
+# Database
+SQLAlchemy
+
+# Auth
+passlib[bcrypt]
+python-jose[cryptography]
+
+# Config
+pydantic-settings
+
+# LLM Providers (examples)
+openai
+anthropic
+google-generativeai
+
+# Other
+python-multipart
+email-validator
