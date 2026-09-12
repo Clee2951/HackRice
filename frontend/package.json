@@ -1,0 +1,39 @@
+{
+  "name": "hackrice-kiosk",
+  "version": "1.0.0",
+  "description": "Standalone Electron kiosk UI with drag-and-drop upload to Vultr (via backend proxy).",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
+  "build": {
+    "appId": "com.hackrice.kiosk",
+    "productName": "HackRice Kiosk",
+    "files": [
+      "main.js",
+      "preload.js",
+      "taskbar.ps1",
+      "renderer/**/*",
+      ".env"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}
