@@ -3,8 +3,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from backend.api.deps import get_db, get_current_user
 from backend.ai.gemini_client import get_ai
 from backend.ai import prompts
-from backend.models.study import StudySession, RecallAttempt, ChatMessage
-from backend.schemas.study import SessionCreate, RecallInput, ChatInput, ChatAnswer
+from backend.models.study import StudySession, RecallAttempt, ChatMessage, WellbeingReading
+from backend.schemas.study import SessionCreate, RecallInput, ChatInput, ChatAnswer, WellbeingReport
 from backend.services import study_service as study
 from backend.services.document_service import check_pages
 
@@ -37,9 +37,27 @@ def get_session(session_id: int, db=Depends(get_db), user=Depends(get_current_us
 @router.post("/{session_id}/advance")
 def advance_session(session_id: int, db=Depends(get_db), user=Depends(get_current_user)):
     session = study.owned_session(db, user.id, session_id)
-    study.advance(session)
+    study.advance(db, session)
     study.commit(db)
     return study.view(session)
+
+@router.post("/{session_id}/wellbeing")
+def report_wellbeing(session_id: int, body: WellbeingReport, db=Depends(get_db), user=Depends(get_current_user)):
+    # Reported by the Presage capture client (presage/session.mjs) after a
+    # study/review timer ends, keyed to whichever round is currently active.
+    # Consumed by study.advance() when the round's feedback->break
+    # transition happens, to extend the break on sustained stress/drowsiness.
+    session = study.owned_session(db, user.id, session_id)
+    if session.phase not in {"study", "review", "recall", "feedback"}:
+        raise HTTPException(409, "No active round to attach a wellbeing report to")
+    reading = study.record_wellbeing(db, session, body)
+    return study.wellbeing_view(reading)
+
+@router.get("/{session_id}/wellbeing")
+def wellbeing_history(session_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+    session = study.owned_session(db, user.id, session_id)
+    rows = db.query(WellbeingReading).filter_by(session_id=session.id).order_by(WellbeingReading.round_number).all()
+    return [study.wellbeing_view(r) for r in rows]
 
 @router.post("/{session_id}/pause")
 def pause_session(session_id: int, db=Depends(get_db), user=Depends(get_current_user)):

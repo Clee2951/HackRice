@@ -189,9 +189,119 @@ Still placeholder/unvalidated: `closedRatio` (0.5), `baselinePercentile`
 reasonable-guess defaults, not tuned against a range of real users/lighting/
 camera setups.
 
+### Planned: mouth/head signals (paused mid-build, not wired in yet)
+
+Requested addition: expand drowsiness detection beyond eye closure with two
+more classic signals:
+- **Yawning** — frequent, wide mouth openings.
+- **Head/posture** — forward or lateral head nodding, and sustained
+  tilt/head falling backward as a sign of losing postural control.
+
+Draft, untested, NOT imported by session.mjs yet:
+- [presage/mouth.mjs](../presage/mouth.mjs) — Mouth Aspect Ratio (MAR),
+  same technique as eye.mjs's EAR. `createYawnMonitor()` counts sustained
+  wide-mouth events and fires a "frequent-yawning" alert once the count
+  within a trailing window (default 5 min) crosses a threshold — a single
+  yawn is normal, *frequent* yawning is the signal.
+- [presage/head-pose.mjs](../presage/head-pose.mjs) — NOT true 3D head pose
+  (no solvePnP/camera intrinsics here), just 2D heuristics: `headRollDegrees()`
+  (absolute lateral tilt angle, no baseline needed) and `noseDropRatio()`
+  (a forward/backward-nod proxy, meant to be read as a *relative* drift from
+  a rolling per-session baseline — like eye.mjs's adaptive approach, since a
+  user's normal screen-reading posture already has some fixed pitch that
+  isn't itself drowsiness). `createHeadPostureMonitor()` fires "head-tilt",
+  "head-nod", or "head-tilt-back" on a sustained (not momentary) deviation.
+
+**Same unconfirmed-topology caveat as eye.mjs**: the landmark indices used
+(mouth corners/lips, eye-outer-corners, nose tip) assume MediaPipe FaceMesh
+topology, same as EAR — but unlike EAR, these specific indices have **not**
+been empirically validated yet (no live open-mouth/head-tilt test run).
+
+Next steps when resumed:
+1. Unit-test `mouth.mjs`/`head-pose.mjs` logic with synthetic data (started,
+   interrupted before completion).
+2. Build a live diagnostic (`face-signals-check.mjs`, same pattern as
+   `eye-openness-check.mjs`) to empirically confirm MAR spikes on a real
+   yawn and roll/noseDropRatio respond correctly to real head tilts/nods.
+3. Wire into session.mjs's alert flow alongside the existing PERCLOS monitor.
+4. Recalibrate thresholds (`marThreshold`, `rollDegreesThreshold`,
+   `noseDropDeviationThreshold`, etc.) against real data, same as every
+   other threshold in this project so far.
+
+## Backend integration: wired and validated end-to-end (2026-09-12)
+
+`presage/session.mjs` now POSTs its end-of-section summary to the real
+backend instead of only printing it — see
+[presage/backend-client.mjs](../presage/backend-client.mjs).
+
+- Config via env vars (`STUDY_SESSION_ID`, `AUTH_TOKEN`, `BACKEND_URL`,
+  defaulting to `http://127.0.0.1:8000`) — this script doesn't own session
+  creation/auth, those come from whatever manages the real study session (a
+  human via Swagger UI today; the Electron app eventually).
+- If `STUDY_SESSION_ID`/`AUTH_TOKEN` aren't set, posting is skipped and the
+  summary just stays local — fully backward compatible with plain
+  standalone testing (verified).
+- Backend side: `backend/models/study.py`'s new `WellbeingReading` table
+  (additive only, doesn't touch `StudySession`'s existing columns — safe
+  against the already-committed `study.db`), `POST/GET
+  /sessions/{id}/wellbeing`, and `study_service.advance()` now adds
+  `extra_break_minutes` on top of `break_seconds` when a round's stored
+  report has `extend_break: true`, at the `feedback -> break` transition.
+
+**Validated real end-to-end, camera included**: ran `session.mjs` against a
+live camera and a real running backend instance — the computed summary
+posted successfully and landed correctly against the right `round_number`
+via `GET /sessions/{id}/wellbeing`. Separately (via pytest +
+manually-driven live HTTP, see below) confirmed `advance()` actually
+extends the break by the reported amount. Also caught and fixed a real bug
+along the way: the `POST /wellbeing` endpoint was returning `{}` (returned
+a raw SQLAlchemy object FastAPI couldn't serialize) instead of the saved
+data — fixed with a `study.wellbeing_view()` helper, and the pytest
+assertion was strengthened to check response body content, not just status
+code, so this class of bug can't silently pass again.
+
+Two new tests in `tests/test_backend.py`
+(`test_wellbeing_extends_break`, `test_wellbeing_without_extend_flag_does_not_extend_break`)
+pass, alongside all 12 pre-existing tests (one pre-existing, unrelated
+failure: a `google-genai` library version drift issue in
+`test_gemini_adapter_validation`, confirmed unrelated to this work).
+
+## One command starts both the session and the camera (2026-09-12)
+
+The Electron kiosk app (`frontend/`) doesn't have any study-session
+UI/logic yet at all (no `/api/v1/sessions` calls anywhere in
+`renderer.js`) — decided not to block on that being built first.
+
+`session.mjs` now creates the backend study session itself
+(`createStudySession()` in [backend-client.mjs](../presage/backend-client.mjs))
+when `AUTH_TOKEN` + `DOCUMENT_ID` are set but `STUDY_SESSION_ID` isn't:
+
+```bash
+AUTH_TOKEN=<token> DOCUMENT_ID=<id> SECTION_MINUTES=25 npm run session
+```
+
+`study_seconds` is kept in sync with `SECTION_MINUTES` (so the backend's
+timer and the capture's own duration actually match) and `break_seconds`
+comes from a `BREAK_SECONDS` env var (default 300). Passing an existing
+`STUDY_SESSION_ID` directly still works too (attaches to a session created
+elsewhere, e.g. by hand via Swagger UI) — fully backward compatible.
+
+**Validated live**: ran with only `AUTH_TOKEN`/`DOCUMENT_ID` set (no
+pre-existing session) — correctly created a new session, ran the camera,
+and posted the summary, all confirmed via `GET /sessions/{id}` and
+`GET /sessions/{id}/wellbeing`.
+
+This isn't wasted work ahead of the Electron UI — once that exists, it can
+just launch this same script (or call the same `createStudySession`/
+`postWellbeing` logic) instead of a human running it by hand.
+
 ## Open questions / TODO
 
-- [ ] Decide backend integration point (see above).
+- [ ] **Add mouth/head signals to drowsiness detection** (not started/paused
+      mid-build — see below).
+- [ ] Wire this into the actual Electron app once its study-session UI
+      exists — launch `session.mjs` (or equivalent) automatically instead of
+      requiring `AUTH_TOKEN`/`DOCUMENT_ID` to be set by hand.
 - [ ] Validate drowsiness detection against a real closed-eyes test (see above).
 - [ ] Tune drowsiness thresholds (currently placeholder defaults, same
       caveat as the stress thresholds) once validated.

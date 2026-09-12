@@ -4,7 +4,7 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm.exc import StaleDataError
 from backend.models.document import Document
-from backend.models.study import StudySession, RecallAttempt
+from backend.models.study import StudySession, RecallAttempt, WellbeingReading
 from backend.schemas.study import Assessment, Lesson
 from backend.services.document_service import check_pages
 from backend.ai import prompts
@@ -59,19 +59,55 @@ def ensure_active(session):
         raise HTTPException(409, "Resume the session or start a new one")
 
 
-def advance(session):
+def advance(db, session):
     ensure_active(session)
     if session.phase in {"study", "review", "break"} and remaining(session) > 0:
         raise HTTPException(409, "This timer has not finished")
     if session.phase in {"study", "review"}:
         session.phase, session.deadline = "recall", None
     elif session.phase == "feedback":
-        session.phase, session.deadline = "break", time.time() + session.break_seconds
+        # Extend the break if the just-finished round's wellbeing report
+        # (see record_wellbeing()) flagged sustained stress/drowsiness.
+        # Additive on top of the configured break_seconds, not a
+        # replacement -- a report that never arrived (client didn't POST
+        # one) just means no extension, not an error.
+        reading = (db.query(WellbeingReading)
+                     .filter_by(session_id=session.id, round_number=session.round_number)
+                     .first())
+        extra_seconds = reading.extra_break_minutes * 60 if reading and reading.extend_break else 0
+        session.phase, session.deadline = "break", time.time() + session.break_seconds + extra_seconds
     elif session.phase == "break":
         session.phase, session.deadline = "review", time.time() + session.study_seconds
         session.round_number += 1
     else:
         raise HTTPException(409, "Submit recall before advancing")
+
+
+def wellbeing_view(reading):
+    return {"round_number": reading.round_number, "avg_stress": reading.avg_stress,
+            "pct_high_stress": reading.pct_high_stress,
+            "longest_high_stress_run_sec": reading.longest_high_stress_run_sec,
+            "blink_rate_per_min": reading.blink_rate_per_min,
+            "drowsiness_alert_count": reading.drowsiness_alert_count,
+            "extend_break": reading.extend_break, "extra_break_minutes": reading.extra_break_minutes,
+            "created_at": reading.created_at}
+
+
+def record_wellbeing(db, session, report):
+    # One reading per round, matching RecallAttempt's shape/uniqueness --
+    # upsert rather than error on a resubmit (e.g. a retried POST), since
+    # this isn't user-authored content needing the same tamper-resistance
+    # as a recall submission.
+    existing = (db.query(WellbeingReading)
+                  .filter_by(session_id=session.id, round_number=session.round_number)
+                  .first())
+    if existing is None:
+        existing = WellbeingReading(session_id=session.id, round_number=session.round_number)
+        db.add(existing)
+    for field, value in report.model_dump().items():
+        setattr(existing, field, value)
+    commit(db)
+    return existing
 
 
 def assess_recall(db, doc, session, request, ai):

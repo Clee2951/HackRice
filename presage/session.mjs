@@ -10,16 +10,26 @@
 //
 // Reads SMARTSPECTRA_API_KEY from ../.env via `node --env-file`.
 //
-// This is still a standalone proof of concept: the summary is only printed
-// to the console and the wake-up "alert" is a terminal bell + a printed
-// banner. Once the shape is agreed, this becomes either an event posted to
-// the FastAPI backend or a value read by the Electron main process (which
-// can trigger a real OS notification/sound) — see docs/presage-notes.md.
+// One command can start both the backend study session and the camera:
+//   AUTH_TOKEN=<token> DOCUMENT_ID=<id> SECTION_MINUTES=25 npm run session
+// creates a new study session (kept in sync: study_seconds = SECTION_MINUTES,
+// break_seconds = BREAK_SECONDS env var, default 300) if STUDY_SESSION_ID
+// isn't already set. Or pass an existing STUDY_SESSION_ID directly to attach
+// to one already created elsewhere (e.g. via Swagger UI). Set BACKEND_URL
+// too if not running on the default http://127.0.0.1:8000.
+//
+// The end-of-section summary posts to that session's /wellbeing endpoint
+// (see backend-client.mjs). Without AUTH_TOKEN, none of this backend
+// integration happens and it just prints locally, same as before. The
+// wake-up "alert" during the section is still just a terminal bell + a
+// printed banner — a real app would trigger an OS notification/sound
+// instead (see docs/presage-notes.md).
 
 import { SmartSpectraSDK, faceMetrics, decodeMetrics } from "@smartspectra/node-sdk";
 import { EXPRESSION_NAMES, stressIndexFromExpression, summarizeSection } from "./stress.mjs";
 import { createDrowsinessMonitor } from "./drowsiness.mjs";
 import { averageEar, createAdaptiveEyeClosureDetector } from "./eye.mjs";
+import { postWellbeing, createStudySession } from "./backend-client.mjs";
 
 // DEBUG_EXPRESSIONS=1 prints the raw per-type confidence distribution
 // (throttled to ~1/sec, since metrics arrive at camera framerate) so you can
@@ -40,6 +50,24 @@ const sectionMinutes = Number(process.env.SECTION_MINUTES ?? 25);
 if (!Number.isFinite(sectionMinutes) || sectionMinutes <= 0) {
   console.error("SECTION_MINUTES must be a positive number.");
   process.exit(1);
+}
+
+// One command starts both the backend study session and the camera, instead
+// of requiring one to be hand-created via Swagger UI first: if no
+// STUDY_SESSION_ID is given but AUTH_TOKEN + DOCUMENT_ID are, create one
+// now. study_seconds is kept in sync with SECTION_MINUTES so the backend's
+// timer and this script's own capture duration actually match.
+if (!process.env.STUDY_SESSION_ID && process.env.AUTH_TOKEN && process.env.DOCUMENT_ID) {
+  console.log("No STUDY_SESSION_ID set — creating a new study session...");
+  try {
+    const breakSeconds = Number(process.env.BREAK_SECONDS ?? 300);
+    const sessionId = await createStudySession({ studySeconds: sectionMinutes * 60, breakSeconds });
+    process.env.STUDY_SESSION_ID = String(sessionId);
+    console.log(`Created study session ${sessionId} (study=${sectionMinutes}min, break=${breakSeconds}s).`);
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
 }
 
 const sdk = new SmartSpectraSDK({
@@ -141,6 +169,8 @@ async function endSection(reason) {
   } else {
     console.log("\n=> No sustained high stress detected. Normal break.");
   }
+
+  await postWellbeing(summary);
 
   process.exit(process.exitCode ?? 0);
 }
