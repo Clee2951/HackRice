@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline';" />
+  <title>HackRice Kiosk</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <button id="exit-btn" class="exit-btn" title="Exit Kiosk">✕ Exit</button>
+
+  <main class="kiosk-container">
+    <header class="kiosk-header">
+      <h1>Document Upload Kiosk</h1>
+      <p>Drag and drop a file below, or click to choose one from your device.</p>
+    </header>
+
+    <section id="drop-zone" class="drop-zone">
+      <div class="drop-zone-icon">⬆</div>
+      <p class="drop-zone-text">Drag & drop a file here</p>
+      <p class="drop-zone-or">— or —</p>
+      <button id="choose-file-btn" class="choose-file-btn">Choose File</button>
+    </section>
+
+    <ul id="status-list" class="status-list"></ul>
+  </main>
+
+  <!-- Exit confirmation modal -->
+  <div id="exit-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <h2>Exit Kiosk?</h2>
+      <p id="pin-prompt-text" class="hidden">Enter PIN to confirm:</p>
+      <input id="pin-input" type="password" class="pin-input hidden" maxlength="12" />
+      <p id="exit-error" class="exit-error hidden"></p>
+      <div class="modal-buttons">
+        <button id="cancel-exit-btn" class="btn-secondary">Cancel</button>
+        <button id="confirm-exit-btn" class="btn-danger">Exit</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
