@@ -5,6 +5,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "dev": "electron . --no-kiosk",
     "build": "electron-builder"
   },
   "author": "",

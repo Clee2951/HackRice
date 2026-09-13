@@ -1,35 +1,85 @@
 # HackRice Kiosk (Electron)
 
-A standalone kiosk app with:
-- Full-screen kiosk mode with a visible **✕ Exit** button (optional PIN)
+An Electron shell around the `casino_theme/` Next.js UI, with:
+- Kiosk/lockdown mode **on by default** (full-screen, taskbar hidden on
+  Windows — see the limitation note below)
+- A visible **EXIT** button in the UI (top-right) with an optional PIN,
+  wired through `preload.js`'s `window.kioskAPI`
+- A renderer-independent emergency exit shortcut (see below) — mandatory
+  safety valve for anything that blocks window close
 - Drag-and-drop / "Choose File" upload, proxied to your FastAPI backend
-  (which forwards to Vultr Object Storage -- the secret key never lives
+  (which forwards to Vultr Object Storage — the secret key never lives
   in this app)
 - Windows taskbar auto-hide/restore that survives the native file dialog
   and every possible exit path (clean exit, crash, SIGINT/SIGTERM)
 
+## ⚠️ Honest limitation: this is a deterrent, not a real lockdown
+
+**There is no way for a normal Electron app to reliably block Cmd+Tab or
+Mission Control on macOS** (or, generally, low-level OS shortcuts on any
+platform) — that's intentional OS security design, not a bug here. Real
+"LockDown Browser"-style products need special system-level
+installers/entitlements to do that; a BrowserWindow API doesn't have
+access to those mechanisms.
+
+What this app actually does when in kiosk mode:
+- Removes the macOS default app menu (and the Cmd+Q/Cmd+H/Cmd+M shortcuts
+  bound to it)
+- Blocks the window from closing except through the Exit button/PIN flow,
+  **or** the emergency shortcut below
+
+Treat all of that as "makes leaving mildly inconvenient," not "makes
+leaving impossible." State this plainly in any demo/report — don't
+oversell it.
+
+### 🚨 Emergency exit: `Cmd/Ctrl+Alt+Shift+X`
+
+**A real user got hard-locked out twice** by an earlier version of this
+app that also stole focus back on every `blur` and stayed always-on-top —
+it fought every legitimate way to regain control (Force Quit, Activity
+Monitor, switching to a terminal), and there was no way out short of
+powering the machine off. That behavior has been removed entirely.
+
+This shortcut always works — independent of the renderer, the PIN, or
+whether the web UI even loaded — and quits immediately, bypassing
+`EXIT_PIN`. If you're ever stuck, use it before resorting to anything more
+drastic. If it doesn't respond (another app may already hold that
+combo — check the terminal log for a warning about this), the Exit
+button/PIN flow is the fallback; only power off as an absolute last
+resort.
+
 ## Setup
 
 ```bash
-cd kiosk
+cd frontend
 npm install
-cp .env.example .env   # edit BACKEND_URL / EXIT_PIN as needed
+cp .env.example .env   # edit BACKEND_URL / EXIT_PIN / NEXT_APP_URL as needed
+cd casino_theme && npm install   # the actual UI is a separate Next.js app
 ```
 
 ## Running
 
-**Preview mode (normal window, safe to test in):**
+You need **both** running at once — the Electron shell only displays
+whatever's at `NEXT_APP_URL` (default `http://localhost:3000`), it doesn't
+serve the UI itself:
+
 ```bash
-npm start
+# terminal 1
+cd frontend/casino_theme && npm run dev
+
+# terminal 2
+cd frontend && npm start
 ```
 
-**True kiosk mode (full-screen, taskbar hidden on Windows):**
+**Kiosk/lockdown mode is now the default** (`npm start`). For local
+development — a normal resizable window, no focus-stealing, easy to
+Cmd+Tab away from while iterating — use:
 ```bash
-npm start -- --kiosk
+npm run dev
 ```
 
-To get out of kiosk mode, click the **✕ Exit** button (top-right) and
-confirm. If you set `EXIT_PIN` in `.env`, it'll ask for that PIN first.
+To get out of kiosk mode, click the **EXIT** button (top-right) in the UI
+and confirm. If you set `EXIT_PIN` in `.env`, it'll ask for that PIN first.
 
 ## Building a standalone installer
 
@@ -67,6 +117,45 @@ of this app, or a hard crash): press `Ctrl+Shift+Esc` → File → Run new
 task → type `explorer.exe` → Enter. This restarts Explorer instantly,
 no reboot needed.
 
+## How the guaranteed exit button works
+
+There are actually **two** Exit buttons, both calling the same
+`window.kioskAPI.getConfig()`/`requestExit()` bridge:
+
+1. A React one in `casino_theme/app/components/blackjackTable.tsx` — part
+   of the actual UI.
+2. A second one **injected directly by `main.js`**, independent of that
+   React app entirely.
+
+The injected one is the important part, and exists because of a real
+failure mode: the Electron window only shows whatever's at `NEXT_APP_URL`
+(`mainWindow.loadURL(...)`) — if that Next.js dev server isn't running,
+the window shows Chromium's bare connection-error page, which has nothing
+clickable on it at all. Relying solely on the React button means a
+downed dev server = no visible way out.
+
+**How it's injected** (`injectExitOverlay()` in `main.js`):
+- Runs on `webContents.on("dom-ready", ...)` — fires for *any* page this
+  window loads, not just the intended one.
+- `webContents.insertCSS(css)` adds the button/modal styling.
+- `webContents.executeJavaScript(js)` builds the button + PIN modal as
+  plain DOM nodes and appends them to `document.body`, then wires their
+  click handlers to `window.kioskAPI` — the same `contextBridge`-exposed
+  API the React button uses, so there's one IPC code path, not two.
+- Guards against double-injection (`dom-ready` can fire more than once)
+  by checking whether `#__kiosk_exit_btn` already exists before adding
+  anything.
+- Bails out early if `window.kioskAPI` isn't present (e.g. this script
+  somehow ran outside the Electron preload context) rather than injecting
+  a button that can't actually do anything.
+
+**The fallback page** (`did-fail-load` handler): if the real app can't be
+reached, `main.js` loads a minimal inline `data:text/html,...` page
+instead of leaving Chromium's default error page up. That page also
+triggers `dom-ready`, so the injected Exit button appears on it too —
+meaning there's always a working way out, even when the intended UI
+never loads at all.
+
 ## Connecting to your backend
 
 This app expects a FastAPI endpoint at:
@@ -84,10 +173,8 @@ backend then forwards to Vultr Object Storage (S3-compatible) using
 
 | File | Purpose |
 |---|---|
-| `main.js` | Main process: window creation, taskbar control, IPC handlers, upload logic |
+| `main.js` | Main process: window creation, injected exit-button overlay, emergency shortcut, taskbar control, IPC handlers, upload logic |
 | `preload.js` | Secure bridge exposing `window.kioskAPI` to the renderer |
 | `taskbar.ps1` | PowerShell helper to hide/show the Windows taskbar |
-| `renderer/index.html` | Kiosk UI markup |
-| `renderer/style.css` | Kiosk UI styling |
-| `renderer/renderer.js` | Kiosk UI behavior: exit modal, drag-and-drop, upload status |
-| `.env.example` | Template for `BACKEND_URL` / `EXIT_PIN` |
+| `casino_theme/` | The actual UI — a separate Next.js app, loaded via `NEXT_APP_URL` |
+| `.env.example` | Template for `BACKEND_URL` / `EXIT_PIN` / `NEXT_APP_URL` |

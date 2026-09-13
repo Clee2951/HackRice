@@ -16,6 +16,8 @@ type KioskAPI = {
     filePath?: string
     fileName?: string
   }>
+  getConfig: () => Promise<{ requiresPin: boolean }>
+  requestExit: (pin?: string) => Promise<{ success: boolean; message?: string }>
 }
 
 declare global {
@@ -62,6 +64,32 @@ export function BlackjackTable() {
   const seats = buildSeats(Math.max(SEAT_COUNT, documents.length))
   const tableMinWidth = 1100 + Math.max(0, documents.length - SEAT_COUNT) * 120
 
+  const [exitPrompt, setExitPrompt] = useState<{
+    open: boolean
+    requiresPin: boolean
+    pin: string
+    error?: string
+  } | null>(null)
+
+  async function openExitPrompt() {
+    if (!window.kioskAPI) {
+      console.error("Exit is available when the app is running in Electron.")
+      return
+    }
+    const config = await window.kioskAPI.getConfig()
+    setExitPrompt({ open: true, requiresPin: config.requiresPin, pin: "" })
+  }
+
+  async function confirmExit() {
+    if (!window.kioskAPI || !exitPrompt) return
+    const result = await window.kioskAPI.requestExit(exitPrompt.pin)
+    if (!result.success) {
+      // A successful call quits the app from the main process -- nothing
+      // left to update here. Only a wrong PIN leaves the prompt open.
+      setExitPrompt({ ...exitPrompt, error: result.message ?? "Incorrect PIN." })
+    }
+  }
+
   async function addFile() {
     if (!window.kioskAPI) {
       console.error("File selection is available when the app is running in Electron.")
@@ -85,7 +113,56 @@ export function BlackjackTable() {
   }
 
   return (
-    <div className="flex min-h-svh w-full items-start justify-center overflow-x-auto overflow-y-hidden bg-radial from-green-900 from-50% to-neutral-900 to-100% bg-felt-dark p-4">
+    <div className="relative flex min-h-svh w-full items-start justify-center overflow-hidden bg-radial from-green-900 from-50% to-neutral-900 to-100% bg-felt-dark p-4">
+      {/* Kiosk exit -- fixed corner, always reachable regardless of table layout. */}
+      <button
+        type="button"
+        onClick={openExitPrompt}
+        className="fixed right-4 top-4 z-50 rounded-full border border-gold/40 bg-black/40 px-4 py-2
+        font-serif text-sm text-gold hover:scale-105 active:scale-95 duration-300 ease-in-out cursor-pointer"
+      >
+        EXIT
+      </button>
+
+      {exitPrompt?.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+          <div className="w-full max-w-sm rounded-xl border border-gold/40 bg-neutral-900 p-6 font-serif text-gold shadow-2xl">
+            <h2 className="mb-4 text-center text-xl">Exit kiosk mode?</h2>
+            {exitPrompt.requiresPin && (
+              <input
+                type="password"
+                inputMode="numeric"
+                autoFocus
+                value={exitPrompt.pin}
+                onChange={(e) => setExitPrompt({ ...exitPrompt, pin: e.target.value, error: undefined })}
+                onKeyDown={(e) => e.key === "Enter" && confirmExit()}
+                placeholder="Enter PIN"
+                className="mb-3 w-full rounded-md border border-gold/40 bg-black/40 px-3 py-2 text-center text-white outline-none"
+              />
+            )}
+            {exitPrompt.error && (
+              <p className="mb-3 text-center text-sm text-red-400">{exitPrompt.error}</p>
+            )}
+            <div className="flex justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => setExitPrompt(null)}
+                className="rounded-full border border-gold/40 px-4 py-2 text-sm hover:scale-105 active:scale-95 duration-300 ease-in-out cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmExit}
+                className="rounded-full border border-gold/40 bg-gold/20 px-4 py-2 text-sm hover:scale-105 active:scale-95 duration-300 ease-in-out cursor-pointer"
+              >
+                Exit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Table box: width drives the semi-circle; height is half of width. */}
       <div className="relative aspect-[2/1] w-full max-w-[1100px] shrink-0" style={{ minWidth: `${tableMinWidth}px` }}>
         {/* Wooden rail (slightly larger semi-circle behind the felt) */}
