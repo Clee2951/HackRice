@@ -16,9 +16,16 @@ Gemini extracts the learning objectives that the whole study loop is
 built on — so the browser now sends the file once, to
 `POST /api/v1/documents`, and the backend is the only thing holding keys.
 
-Downloads still use presigned URLs: `GET /api/v1/documents/{id}/file`
-returns a 307 to a one-hour signed link, so the bucket stays private and
-the browser never sees a credential.
+Downloads are proxied, not redirected. `GET /api/v1/documents/{id}/file`
+reads the object and returns the bytes, so the reader's request stays
+same-origin against FastAPI and carries its `Authorization` header
+normally. A 307 to a presigned URL looks tidier but breaks in the
+browser: the header is stripped on a cross-origin redirect, and the
+request then fails CORS unless the bucket is explicitly configured for
+the app's origin — a sharp edge that only appears once object storage is
+switched on. `GET /api/v1/documents/{id}/file-url` still hands out a
+one-hour presigned link for non-browser consumers (a native PDF viewer,
+say); it 409s for a document that lives in the database instead.
 
 **Configuration became optional.** The teammate version raised at module
 import if any env var was missing, which took down the whole API — and

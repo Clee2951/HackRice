@@ -299,6 +299,9 @@ def test_object_storage_upload_and_download(setup, monkeypatch):
         def put_object(self, Bucket, Key, Body, ContentType):
             bucket[Key] = (Body, ContentType)
 
+        def get_object(self, Bucket, Key):
+            return {'Body': BytesIO(bucket[Key][0])}
+
         def generate_presigned_url(self, op, Params, ExpiresIn):
             return f'https://example-bucket.invalid/{Params["Key"]}?signed=1'
 
@@ -319,9 +322,11 @@ def test_object_storage_upload_and_download(setup, monkeypatch):
         # The whole point of object storage: the blob column stays empty.
         assert row.original is None and row.storage_key == key
 
-    saved = client.get(f'/api/v1/documents/{did}/file', headers=h, follow_redirects=False)
-    assert saved.status_code == 307
-    assert saved.headers['location'] == f'https://example-bucket.invalid/{key}?signed=1'
+    # Proxied, not redirected -- see storage.get_bytes() for why.
+    saved = client.get(f'/api/v1/documents/{did}/file', headers=h)
+    assert saved.status_code == 200 and saved.content == text
+    assert client.get(f'/api/v1/documents/{did}/file-url', headers=h).json()['url'] == (
+        f'https://example-bucket.invalid/{key}?signed=1')
 
 
 def test_unconfigured_object_storage_falls_back_to_the_database(setup):

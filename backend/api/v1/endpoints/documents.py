@@ -1,6 +1,5 @@
 from pathlib import Path
-from fastapi import APIRouter, Depends, UploadFile, File, Response
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Response
 from backend.api.deps import get_db, get_current_user
 from backend.ai.gemini_client import get_ai
 from backend.core.config import settings
@@ -53,7 +52,22 @@ def get_file(document_id: int, db=Depends(get_db), user=Depends(get_current_user
     holds credentials, and the signed URL expires in an hour.
     """
     doc = owned_document(db, user.uid, document_id)
-    if doc.storage_key:
-        return RedirectResponse(storage.presigned_get(doc.storage_key), status_code=307)
-    return Response(content=doc.original or b"", media_type=doc.media_type,
+    data = storage.get_bytes(doc.storage_key) if doc.storage_key else (doc.original or b"")
+    return Response(content=data, media_type=doc.media_type,
                     headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
+
+
+@router.get("/{document_id}/file-url")
+def get_file_url(document_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+    """A short-lived direct link to the stored original.
+
+    Only meaningful for object-storage-backed documents; a DB-backed one
+    has no URL to hand out and says so rather than inventing one. The
+    reader UI uses /file (proxied, same-origin) -- this exists for
+    consumers that want to pass a plain URL to something else, such as a
+    native PDF viewer.
+    """
+    doc = owned_document(db, user.uid, document_id)
+    if not doc.storage_key:
+        raise HTTPException(409, "This document is stored in the database; fetch it from /file instead")
+    return {"url": storage.presigned_get(doc.storage_key)}

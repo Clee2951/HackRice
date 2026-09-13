@@ -103,6 +103,26 @@ def put_bytes(uid: int, document_id: int, filename: str, data: bytes, content_ty
     return key
 
 
+def get_bytes(key: str) -> bytes:
+    """Read an object back.
+
+    Used by the /file endpoint, which proxies rather than redirecting: an
+    <iframe>/fetch() in the reader is same-origin against FastAPI, so it
+    carries the Authorization header and needs no CORS rules on the
+    bucket. A 307 to a presigned URL would drop the auth header (browsers
+    strip it across origins) and then fail CORS unless the bucket is
+    configured for the app's origin -- a sharp edge that only shows up
+    once object storage is switched on, which is exactly the wrong time
+    to discover it. /file-url still exposes the presigned link for
+    non-browser consumers.
+    """
+    try:
+        return _client().get_object(Bucket=settings.VULTR_STORAGE_BUCKET, Key=key)["Body"].read()
+    except Exception as exc:
+        logger.warning("Vultr object read failed (%s): %s", type(exc).__name__, exc)
+        raise HTTPException(502, "Could not read this document back from storage")
+
+
 def presigned_get(key: str, expires_in: int = 3600) -> str:
     """A temporary download URL for a stored object."""
     try:
