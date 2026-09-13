@@ -20,3 +20,7 @@ venv/
 
 # Claude Code local settings (personal, machine-specific — not shared)
 .claude/settings.local.json
+
+# Personal notes (resume prep, session-to-session progress tracking) — not team-facing
+RESUME_SUMMARY.md
+todo.md
