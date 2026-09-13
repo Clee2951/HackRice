@@ -462,3 +462,114 @@ def test_cors_allows_the_desktop_app_s_loopback_origin(setup):
         response = client.options('/api/v1/auth/login/access-token',
                                   headers={'Origin': origin, **preflight})
         assert 'access-control-allow-origin' not in response.headers, origin
+
+
+def test_ai_errors_are_classified_without_leaking_the_request(monkeypatch):
+    """The 502 the browser sees must name the cause, not the request body.
+
+    Gemini echoes the request in its error details, which here means the
+    student's recall answer or the text of their document. The old message
+    listed all four possible causes at once ("check the key, model, quota,
+    and connection") and leaked nothing but also diagnosed nothing.
+    """
+    from google.genai import errors as genai_errors
+    from backend.ai.gemini_client import diagnose
+    from backend.core.config import settings
+    monkeypatch.setattr(settings, 'GEMINI_MODEL', 'some-model')
+
+    def api_error(code, status):
+        return genai_errors.APIError(
+            code, {'error': {'code': code, 'status': status,
+                             'message': 'PRIVATE STUDENT ANSWER'}})
+
+    cases = {
+        (403, 'PERMISSION_DENIED'): 'API key',
+        (404, 'NOT_FOUND'): 'some-model',
+        (429, 'RESOURCE_EXHAUSTED'): 'quota',
+        (400, 'INVALID_ARGUMENT'): 'structured JSON',
+        (503, 'UNAVAILABLE'): 'server error',
+    }
+    for (code, status), expected in cases.items():
+        message = diagnose(api_error(code, status))
+        assert expected in message, (code, status, message)
+        assert 'PRIVATE STUDENT ANSWER' not in message
+
+    # Anything that isn't an APIError is a transport problem or a bug here.
+    assert 'internet connection' in diagnose(ConnectionError('dns failure'))
+
+
+def test_ai_adapter_converts_provider_errors_to_a_diagnosis(monkeypatch):
+    """The adapter itself is the seam that classifies, so test it there.
+
+    An earlier version of this test raised the provider error from the
+    FakeAI fixture instead. That never reaches diagnose() -- FakeAI is not
+    a GeminiClient -- so it asserted nothing about the real path and just
+    surfaced the raw error as a 500.
+    """
+    from types import SimpleNamespace
+    from google.genai import errors as genai_errors
+    from backend.ai.gemini_client import GeminiClient
+    from backend.core.config import settings
+
+    monkeypatch.setattr(settings, 'GEMINI_MODEL', 'some-model')
+    adapter = GeminiClient.__new__(GeminiClient)
+
+    def explode(**kwargs):
+        raise genai_errors.APIError(
+            429, {'error': {'status': 'RESOURCE_EXHAUSTED', 'message': 'PRIVATE ANSWER'}})
+
+    adapter.client = SimpleNamespace(models=SimpleNamespace(generate_content=explode))
+    with pytest.raises(HTTPException) as caught:
+        adapter.structured(prompts.CHAT, {'question': 'Explain'}, ChatAnswer)
+    assert caught.value.status_code == 502
+    assert 'quota' in caught.value.detail
+    assert 'PRIVATE ANSWER' not in caught.value.detail
+
+
+def test_transient_gemini_errors_are_retried_but_permanent_ones_are_not(monkeypatch):
+    """A per-minute quota cap clears on its own; a bad key never does.
+
+    Gemini's free tier limits requests per minute as well as per day, and
+    one study round spends several calls -- extract on upload, assess and
+    lesson on every recall, one per tutor question. Bursting through the
+    per-minute cap is easy, so a short retry turns a dead session into a
+    pause. Retrying a 403 would only make the UI hang before showing the
+    same error.
+    """
+    from types import SimpleNamespace
+    from google.genai import errors as genai_errors
+    from backend.ai import gemini_client as module
+    from backend.core.config import settings
+
+    monkeypatch.setattr(settings, 'GEMINI_MODEL', 'some-model')
+    monkeypatch.setattr(module, 'RETRY_DELAYS_SEC', (0, 0))
+
+    def adapter_failing(times, code):
+        attempts = {'n': 0}
+
+        def generate(**kwargs):
+            attempts['n'] += 1
+            if attempts['n'] <= times:
+                raise genai_errors.APIError(code, {'error': {'status': 'X', 'message': 'PRIVATE'}})
+            return SimpleNamespace(text='{"answer":"ok","source_pages":[1]}')
+
+        built = module.GeminiClient.__new__(module.GeminiClient)
+        built.client = SimpleNamespace(models=SimpleNamespace(generate_content=generate))
+        return built, attempts
+
+    # Transient: recovers on the third attempt rather than failing the round.
+    adapter, attempts = adapter_failing(2, 429)
+    assert adapter.structured(prompts.CHAT, {}, ChatAnswer).answer == 'ok'
+    assert attempts['n'] == 3
+
+    # Still transient but persistent: gives up, and says it was the quota.
+    adapter, attempts = adapter_failing(99, 429)
+    with pytest.raises(HTTPException) as caught:
+        adapter.structured(prompts.CHAT, {}, ChatAnswer)
+    assert attempts['n'] == 3 and 'quota' in caught.value.detail
+
+    # Permanent: one attempt only.
+    adapter, attempts = adapter_failing(99, 403)
+    with pytest.raises(HTTPException) as caught:
+        adapter.structured(prompts.CHAT, {}, ChatAnswer)
+    assert attempts['n'] == 1 and 'API key' in caught.value.detail
