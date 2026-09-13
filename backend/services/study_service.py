@@ -63,6 +63,11 @@ def view(session):
     return {"id": session.id, "document_id": session.document_id,
             "objective_ids": session.objective_ids, "phase": session.phase,
             "paused": session.paused, "round_number": session.round_number,
+            # The configured round lengths, so a client can show "15 min
+            # rounds" and size its own capture window to match without
+            # having to remember what it asked for when it created the
+            # session (or guess, after resuming one it didn't create).
+            "study_seconds": session.study_seconds, "break_seconds": session.break_seconds,
             "deadline": session.deadline, "server_time": time.time(),
             "remaining_seconds": math.ceil(seconds) if seconds is not None else None,
             "lesson": session.lesson if session.phase in {"feedback", "break", "review"} else None}

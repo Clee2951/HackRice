@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend import crud, schemas
@@ -46,7 +47,15 @@ def create_user(
     if user:
         raise HTTPException(
             status_code=400,
-            detail="The user with this username already exists in the system.",
+            detail="An account with this email already exists.",
         )
-    user = crud.user.create(db, obj_in=user_in)
+    try:
+        user = crud.user.create(db, obj_in=user_in)
+    except IntegrityError:
+        # users.username is unique too, and nothing above checks it. The
+        # frontend defaults the display name to the email's local part, so
+        # two people signing up as alex@a.com and alex@b.com collide here
+        # -- which is a name clash, not a server fault.
+        db.rollback()
+        raise HTTPException(status_code=400, detail="That display name is taken. Pick another.")
     return user

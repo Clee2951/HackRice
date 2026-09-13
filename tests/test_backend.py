@@ -337,3 +337,21 @@ def test_unconfigured_object_storage_falls_back_to_the_database(setup):
     h = account(client, 'blob@example.com')
     did = document(client, h)
     assert client.get(f'/api/v1/documents/{did}/file', headers=h).status_code == 200
+
+
+def test_duplicate_signups_are_rejected_cleanly(setup):
+    """Both unique columns on users -- email and username -- give a 400.
+
+    username has no explicit check before the insert, so without the
+    IntegrityError handler this second signup surfaces as a 500. It is
+    reachable in normal use: the frontend defaults the display name to the
+    email's local part, so alex@a.com and alex@b.com collide.
+    """
+    client, factory, ai = setup
+    first = {'email': 'alex@a.com', 'username': 'alex', 'password': 'password123'}
+    assert client.post('/api/v1/auth/signup', json=first).status_code == 200
+    assert client.post('/api/v1/auth/signup', json=first).status_code == 400
+    clash = {'email': 'alex@b.com', 'username': 'alex', 'password': 'password123'}
+    response = client.post('/api/v1/auth/signup', json=clash)
+    assert response.status_code == 400, response.text
+    assert 'display name' in response.json()['detail']
