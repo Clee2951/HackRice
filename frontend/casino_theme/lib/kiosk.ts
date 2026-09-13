@@ -25,7 +25,19 @@ export type PresageEvent =
   | { type: "summary"; extendBreak: boolean; extraBreakMinutes: number };
 
 export type KioskAPI = {
-  getConfig: () => Promise<{ requiresPin: boolean; backendUrl: string; hasPresageKey: boolean }>;
+  getConfig: () => Promise<{
+    requiresPin: boolean;
+    backendUrl: string;
+    hasPresageKey: boolean;
+    /** False when launched with --no-kiosk; setLockdown becomes a no-op. */
+    lockdownAvailable: boolean;
+  }>;
+  /** Engage or release full-screen lockdown.
+   *
+   * Idempotent and safe to call on every phase change. The emergency exit
+   * shortcut and the injected exit button stay available throughout --
+   * they are registered at startup, not alongside lockdown. */
+  setLockdown: (on: boolean) => Promise<{ lockedDown: boolean; reason?: string }>;
   requestExit: (pin?: string) => Promise<{ success: boolean; message?: string }>;
   pickFile: () => Promise<{
     canceled: boolean;

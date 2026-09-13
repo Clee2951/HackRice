@@ -31,6 +31,14 @@ import { WellbeingPanel } from "./wellbeingPanel";
  * (recall, feedback) wait on the student, not a clock. */
 const TIMED: ReadonlySet<Phase> = new Set<Phase>(["study", "review", "break"]);
 
+/** Phases that lock the screen down.
+ *
+ * The working phases only. Feedback is reading a lesson and a break means
+ * step away from the machine -- holding someone full-screen through either
+ * is the behaviour that makes a focus tool feel like malware. Lockdown
+ * used to engage at launch, before login, which was worse still. */
+const LOCKED: ReadonlySet<Phase> = new Set<Phase>(["study", "review", "recall"]);
+
 /** Phases where the source document is allowed to be on screen.
  *
  * Recall deliberately hides it: an open textbook turns "what do you
@@ -223,6 +231,33 @@ export function StudyRoom({ sessionId }: { sessionId: number }) {
     // would restart capture once a second. Round + phase is the real edge.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [capturing, round, sessionId]);
+
+  // ---------------------------------------------------------------------
+  // Lockdown follows the phase
+  // ---------------------------------------------------------------------
+  // Released while paused too: pausing is the user saying they need to
+  // step away, and refusing to let them is how a focus aid turns into a
+  // trap. Nothing here weakens the escape hatches -- the emergency
+  // shortcut and the injected exit button are registered at startup and
+  // stay live regardless of what this asks for.
+  const shouldLock = Boolean(session && !session.paused && LOCKED.has(session.phase));
+
+  useEffect(() => {
+    const bridge = kiosk();
+    if (!bridge) return;
+    void bridge.setLockdown(shouldLock).catch(() => {
+      // Lockdown is a nicety; failing to engage it must never stop
+      // someone studying.
+    });
+  }, [shouldLock]);
+
+  // Leaving the study room at all releases lockdown, including via the
+  // "Back to table" button or a navigation this component doesn't own.
+  useEffect(() => {
+    return () => {
+      void kiosk()?.setLockdown(false).catch(() => {});
+    };
+  }, []);
 
   async function togglePause() {
     if (!session) return;

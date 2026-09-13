@@ -118,9 +118,17 @@ cd frontend
 npm install
 cp .env.example .env
 npm run build:ui   # export the UI the shell serves (once, or after UI changes)
-npm start          # kiosk/lockdown mode
-npm run dev        # ordinary window, for iterating
+npm start
 ```
+
+The app opens as an ordinary window and **locks down when a study round
+starts**, releasing for feedback and breaks. It used to lock down at
+launch, which meant a first-time user met an inescapable full-screen window
+before they had even logged in.
+
+- `npm start` — normal behaviour, lockdown follows the phase
+- `npm start -- --kiosk` — lock down immediately (demos, exam settings)
+- `npm run dev` — never lock down, for iterating
 
 To iterate on the UI with hot reload instead of rebuilding the export each
 time, run `next dev` and set `NEXT_APP_URL=http://localhost:3000` — the
@@ -149,32 +157,50 @@ to talk to — deploy `backend/` somewhere reachable (a Vultr instance is
 the obvious home, since the database and object storage already live
 there) and point the installer at it.
 
-### Build it in CI (no Windows machine needed)
+### Publishing a release people can actually download
 
-`.github/workflows/build-desktop.yml` builds on a `windows-latest` runner
-and uploads `StudyLoop-Setup-<version>.exe` as an artifact. It runs on any
-push touching `frontend/` or `presage/`, or on demand:
+Tag a version and CI does the rest:
 
-> Actions → **Build Windows installer** → **Run workflow**, optionally
-> setting the backend URL the installer defaults to.
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+That builds the Windows `.exe` and the macOS `.dmg` on their own runners
+and publishes both to a GitHub Release — a permanent public link.
+
+**Don't hand anyone an Actions artifact instead.** Artifacts need a GitHub
+login with access to this repository and expire after 30 days; a release
+asset is a plain download.
+
+Every push touching `frontend/` or `presage/` still builds installers as
+artifacts for testing — it's only publishing that waits for a tag.
 
 Set a repo variable `BACKEND_URL` (Settings → Secrets and variables →
-Actions → Variables) to your deployed API and every build picks it up.
+Actions → Variables) to your deployed API **before tagging**, or the
+installers will default to `127.0.0.1:8000` and reach nothing on anyone
+else's machine.
 
-It's built natively on Windows rather than cross-compiled: NSIS
-cross-builds need Wine, and the SmartSpectra native runtime has to be the
-Windows closure — a host-platform macro would silently ship the wrong one.
+Each OS is built on its own runner rather than cross-compiled: NSIS
+cross-builds need Wine, macOS builds need macOS, and the SmartSpectra
+native runtime has to be the target's closure — a host-platform macro
+ships the wrong one.
+
+The macOS build is **not code-signed** (no Apple Developer identity in
+CI), so first launch needs right-click → Open. Double-clicking is refused.
 
 ### Or build locally
 
 ```bash
-cd frontend && npm run build:win     # needs to run on Windows
+cd frontend && npm run build:win     # on Windows
+cd frontend && npm run build         # current platform
 ```
 
 ### Where the installed app reads its settings
 
 Two things are per-machine rather than baked into the installer, both in
-`%APPDATA%/Study Loop/config.json`:
+`config.json` in the app's data folder — `%APPDATA%/Study Loop/` on
+Windows, `~/Library/Application Support/Study Loop/` on macOS:
 
 ```json
 {

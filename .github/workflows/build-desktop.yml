@@ -1,14 +1,20 @@
-name: Build Windows installer
+name: Build desktop app
 
-# Produces StudyLoop-Setup-<version>.exe as a downloadable artifact, so the
-# installer can be built without owning a Windows machine. electron-builder
-# is run natively on Windows rather than cross-compiled: NSIS cross-builds
-# from Linux/macOS need Wine, and the SmartSpectra native runtime has to be
-# the Windows closure, which a host-platform macro would get wrong.
+# Builds the installers and, on a version tag, publishes them to a GitHub
+# Release so there is a public download link. Actions artifacts are not a
+# distribution channel: they require a GitHub login with access to this
+# repository and they expire after 30 days.
+#
+# Each OS is built on its own runner rather than cross-compiled. NSIS
+# cross-builds need Wine, macOS builds need macOS, and the SmartSpectra
+# native runtime has to be the target's closure -- electron-builder's
+# ${platform} macro expands to the build HOST, so a cross-build ships the
+# wrong one or none at all.
 
 on:
   push:
     branches: ["**"]
+    tags: ["v*"]
     paths:
       - "frontend/**"
       - "presage/**"
@@ -16,16 +22,32 @@ on:
   workflow_dispatch:
     inputs:
       backend_url:
-        description: "Backend the installer points at by default"
+        description: "Backend the installers point at by default"
         required: false
-        default: "http://127.0.0.1:8000"
+        default: ""
 
 permissions:
   contents: read
 
 jobs:
-  windows:
-    runs-on: windows-latest
+  build:
+    strategy:
+      # One broken platform shouldn't throw away the other's installer.
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win
+            native: node-sdk-win32-x64
+            lib: smartspectra_capi.dll
+            pattern: "*.exe"
+          - os: macos-latest
+            target: mac
+            native: node-sdk-darwin-arm64
+            lib: libsmartspectra_capi.dylib
+            pattern: "*.dmg"
+
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
 
     steps:
@@ -36,10 +58,10 @@ jobs:
           node-version: "22"
 
       # --- The UI, exported to static files -------------------------------
-      # NEXT_PUBLIC_API_URL is only the fallback baked into the bundle; the
-      # installed app prefers the URL the main process resolves at runtime
-      # (environment, then <userData>/config.json). Baking one in just means
-      # a fresh install has somewhere sensible to point.
+      # NEXT_PUBLIC_API_URL is only the fallback baked into the bundle. The
+      # installed app prefers whatever the main process resolves at runtime
+      # (environment, then <userData>/config.json), so a shipped installer
+      # can be repointed without a rebuild.
       - name: Build the UI
         working-directory: frontend/casino_theme
         env:
@@ -54,39 +76,110 @@ jobs:
         run: npm ci
 
       # All four platform runtimes install as hard dependencies (~356 MB);
-      # only the Windows one is ever loaded, and shipping the rest would add
-      # a quarter of a gigabyte to the installer for nothing.
-      - name: Drop non-Windows native runtimes
-        working-directory: presage
-        shell: pwsh
+      # only the target's is ever loaded, and shipping the rest would add a
+      # quarter of a gigabyte to every installer for nothing.
+      - name: Keep only the ${{ matrix.target }} native runtime
+        shell: bash
+        working-directory: presage/node_modules/@smartspectra
         run: |
-          Get-ChildItem node_modules/@smartspectra -Directory |
-            Where-Object { $_.Name -like 'node-sdk-*' -and $_.Name -ne 'node-sdk-win32-x64' } |
-            ForEach-Object { Write-Host "removing $($_.Name)"; Remove-Item -Recurse -Force $_.FullName }
-          if (-not (Test-Path node_modules/@smartspectra/node-sdk-win32-x64/smartspectra_capi.dll)) {
-            throw "Windows native runtime missing - the installer would ship without a working camera"
-          }
+          set -euo pipefail
+          for dir in node-sdk-*; do
+            if [ "$dir" != "${{ matrix.native }}" ]; then
+              echo "removing $dir"
+              rm -rf "$dir"
+            fi
+          done
+          # A silent prune bug would otherwise produce an installer that
+          # passes every other check and has no working camera.
+          test -f "${{ matrix.native }}/${{ matrix.lib }}" \
+            || { echo "::error::${{ matrix.lib }} missing - the installer would ship without a working camera"; exit 1; }
 
       # --- Package --------------------------------------------------------
       - name: Build the installer
         working-directory: frontend
         env:
           DEFAULT_BACKEND_URL: ${{ inputs.backend_url || vars.BACKEND_URL || 'http://127.0.0.1:8000' }}
+          # No Apple Developer identity in CI, so don't let electron-builder
+          # pick up a stray keychain identity and half-sign the app. The
+          # result is unsigned: macOS users get a Gatekeeper warning and
+          # have to right-click -> Open the first time. Documented in the
+          # release notes.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: |
           npm ci
-          npx electron-builder --win --publish never
+          npx electron-builder --${{ matrix.target }} --publish never
 
       - name: Check the installer exists
+        shell: bash
         working-directory: frontend
-        shell: pwsh
         run: |
-          $exe = Get-ChildItem dist/*.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $exe) { throw "no .exe produced" }
-          "Built $($exe.Name) ($([math]::Round($exe.Length / 1MB, 1)) MB)"
+          set -euo pipefail
+          file=$(ls dist/${{ matrix.pattern }} 2>/dev/null | head -1)
+          [ -n "$file" ] || { echo "::error::no ${{ matrix.pattern }} produced"; exit 1; }
+          echo "Built $(basename "$file") ($(du -m "$file" | cut -f1) MB)"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: StudyLoop-Windows-Installer
-          path: frontend/dist/*.exe
+          name: StudyLoop-${{ matrix.target }}
+          path: frontend/dist/${{ matrix.pattern }}
           if-no-files-found: error
           retention-days: 30
+
+  # --- Publish ------------------------------------------------------------
+  # Only on a version tag. This is what turns a login-gated, 30-day artifact
+  # into a permanent public download link.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: installers
+          merge-multiple: true
+
+      - name: List what will be published
+        run: ls -lh installers/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: installers/*
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            - **Windows** — download the `.exe`, run it. Installs per-user,
+              so no administrator prompt.
+            - **macOS (Apple Silicon)** — download the `.dmg`, drag to
+              Applications. The app is **not code-signed**, so the first
+              launch needs a right-click → **Open** → **Open** to get past
+              Gatekeeper. Double-clicking will be refused.
+
+            ## First run
+
+            Sign up with any email and a password of at least 8 characters.
+            Then **ADD FILE** to upload a PDF, `.txt`, `.md` or `.docx`, and
+            click the card it deals you.
+
+            ## Optional per-machine settings
+
+            Both live in `config.json` inside the app's data folder —
+            `%APPDATA%/Study Loop/` on Windows,
+            `~/Library/Application Support/Study Loop/` on macOS:
+
+            ```json
+            {
+              "backendUrl": "https://your-backend-host",
+              "smartspectraApiKey": "your-own-key"
+            }
+            ```
+
+            `backendUrl` repoints the app without reinstalling it.
+
+            The camera key is deliberately **not** bundled: shipping one
+            inside an installer would hand the same secret to everyone who
+            downloads it. Without your own key the app works normally and
+            reports the camera as unavailable.

@@ -94,11 +94,21 @@ function readUserConfig() {
 }
 
 const BACKEND_URL = resolveBackendUrl();
-// Kiosk/lockdown is the DEFAULT now, not opt-in -- this app's whole purpose
-// is lockdown, so plain `npm start` should actually attempt it. Pass
-// --no-kiosk for local development (resizable window, no focus-stealing,
-// easy to Cmd+Tab away from while iterating).
-const IS_KIOSK = !process.argv.includes("--no-kiosk");
+// Lockdown is driven by the STUDY PHASE, not by launch.
+//
+// It used to engage the moment the app opened, which meant a first-time
+// user's very first impression -- before they had even logged in -- was an
+// inescapable full-screen window. That reads as a broken app rather than a
+// focus tool, and the natural reaction is to force-quit and not reopen it.
+// The renderer now calls kiosk:setLockdown as the session moves through its
+// phases (see casino_theme's studyRoom.tsx): locked while actually working,
+// released for feedback and breaks, when stepping away is the point.
+//
+//   --no-kiosk   never lock down, whatever the phase (development)
+//   --kiosk      lock down immediately at launch (demos, exam settings)
+const LOCKDOWN_DISABLED = process.argv.includes("--no-kiosk");
+const LOCKDOWN_AT_LAUNCH = process.argv.includes("--kiosk");
+let lockedDown = false;
 const TASKBAR_SCRIPT = path.join(__dirname, "taskbar.ps1");
 
 // IMPORTANT, honest limitation: none of the hardening below achieves a true
@@ -176,12 +186,41 @@ const { startUiServer } = require("./uiServer");
 
 let uiServer = null;
 
+/** Engage or release lockdown at runtime.
+ *
+ * Driven by the study phase rather than by launch, so the window is
+ * ordinary until there is actually something to focus on. Idempotent: the
+ * renderer calls this on every phase change and most calls are no-ops.
+ *
+ * Honest about what it achieves -- see the limitation note at the top of
+ * this file. Full-screen kiosk, hidden Windows taskbar, no app menu, and a
+ * blocked window close. It makes leaving inconvenient, not impossible.
+ */
+function setLockdown(on) {
+  if (LOCKDOWN_DISABLED) return { lockedDown: false, reason: "disabled by --no-kiosk" };
+  if (!mainWindow || mainWindow.isDestroyed()) return { lockedDown };
+  if (on === lockedDown) return { lockedDown };
+
+  lockedDown = on;
+  mainWindow.setKiosk(on);
+  mainWindow.setFullScreen(on);
+  // The macOS app menu carries Cmd+Q/H/M; removing it removes those. Put it
+  // back on release so the app behaves normally between rounds.
+  Menu.setApplicationMenu(null);
+  setTaskbar(on ? "hide" : "show");
+  if (on) mainWindow.focus();
+  console.log(`Lockdown ${on ? "engaged" : "released"}.`);
+  return { lockedDown };
+}
+
 function createWindow(startUrl) {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
-    fullscreen: IS_KIOSK,
-    kiosk: IS_KIOSK,
+    // Starts as an ordinary window. setLockdown() takes it full-screen when
+    // a study round begins.
+    fullscreen: false,
+    kiosk: false,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -196,29 +235,32 @@ function createWindow(startUrl) {
 
   mainWindow.loadURL(startUrl);
 
-  if (IS_KIOSK) {
-    // Hide as soon as the window is ready.
-    mainWindow.once("ready-to-show", () => setTaskbar("hide"));
+  // Re-hide the taskbar whenever this window regains focus -- the fix for
+  // it reappearing after the native "Open File" dialog closes. A no-op
+  // unless lockdown is currently engaged.
+  mainWindow.on("focus", () => {
+    if (lockedDown) setTaskbar("hide");
+  });
 
-    // Re-hide every time this window regains focus -- this is the fix for
-    // the taskbar reappearing after the native "Open File" dialog closes.
-    mainWindow.on("focus", () => setTaskbar("hide"));
+  // Block the window from closing during lockdown, except through the
+  // exit-button/PIN flow -- otherwise Cmd+W/Alt+F4 or a stray close
+  // request would bypass it entirely. Outside lockdown the window closes
+  // like any other.
+  mainWindow.on("close", (event) => {
+    if (lockedDown && !allowClose) event.preventDefault();
+  });
 
-    // Block the window from closing except through the exit-button/PIN
-    // flow -- otherwise Cmd+W/Alt+F4 or a stray close request would bypass
-    // it entirely.
-    mainWindow.on("close", (event) => {
-      if (!allowClose) event.preventDefault();
-    });
+  // Guaranteed exit button: injected by the main process into whatever
+  // page ends up loaded, so it exists even if the UI fails to load or has
+  // a bug of its own. Always injected, not just in lockdown -- the whole
+  // point is that it does not depend on the renderer working correctly,
+  // and lockdown can now begin at any moment.
+  mainWindow.webContents.on("dom-ready", () => injectExitOverlay(mainWindow.webContents));
 
-    // Guaranteed exit button: injected by the main process into whatever
-    // page ends up loaded, so it exists even if the Next.js app fails to
-    // load (e.g. its dev server isn't running -- see the did-fail-load
-    // handler below) or has a bug of its own. Same "don't depend on the
-    // renderer working correctly" philosophy as the emergency shortcut.
-    mainWindow.webContents.on("dom-ready", () => injectExitOverlay(mainWindow.webContents));
+  if (LOCKDOWN_AT_LAUNCH) mainWindow.once("ready-to-show", () => setLockdown(true));
 
-    // If the Next.js app can't be reached at all, don't leave the user on
+  {
+    // If the UI can't be reached at all, don't leave the user on
     // Chromium's bare error page with nothing clickable -- show a minimal
     // local fallback (dom-ready still fires for this, so the exit overlay
     // above still gets injected onto it too).
@@ -349,9 +391,12 @@ app.whenReady().then(() => {
   // to it) even with no menu bar visible -- removing it removes those
   // shortcuts too. Only the ones we can actually control; see the
   // limitation note at the top of this file for Cmd+Tab/Mission Control.
-  if (IS_KIOSK) Menu.setApplicationMenu(null);
+  Menu.setApplicationMenu(null);
 
-  if (IS_KIOSK) {
+  {
+    // Registered unconditionally. Lockdown can now engage at any moment, so
+    // the escape hatch has to already exist when it does -- registering it
+    // alongside lockdown would leave a window where there is no way out.
     const registered = globalShortcut.register(EMERGENCY_EXIT_SHORTCUT, emergencyExit);
     if (!registered) {
       // Don't fail startup over this, but it means the safety valve isn't
@@ -446,9 +491,12 @@ ipcMain.handle("kiosk:requestExit", async (_event, enteredPin) => {
   return { success: true };
 });
 
+ipcMain.handle("kiosk:setLockdown", async (_event, on) => setLockdown(Boolean(on)));
+
 ipcMain.handle("kiosk:getConfig", async () => {
   return {
     requiresPin: Boolean(EXIT_PIN),
+    lockdownAvailable: !LOCKDOWN_DISABLED,
     backendUrl: BACKEND_URL,
     // Lets the wellbeing panel say "no key configured" instead of showing
     // a camera section that can never start.
@@ -473,7 +521,7 @@ ipcMain.handle("kiosk:pickFile", async () => {
 
   // Safety net: re-hide the taskbar immediately after the dialog closes,
   // in addition to the "focus" event listener above.
-  if (IS_KIOSK) setTaskbar("hide");
+  if (lockedDown) setTaskbar("hide");
 
   if (result.canceled || result.filePaths.length === 0) {
     return { canceled: true };

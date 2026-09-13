@@ -29,6 +29,11 @@ contextBridge.exposeInMainWorld("kioskAPI", {
   // lives there and not in the main process.
   pickFile: () => ipcRenderer.invoke("kiosk:pickFile"),
 
+  // Lockdown follows the study phase rather than engaging at launch, so
+  // the renderer -- which is the only thing that knows what phase the
+  // session is in -- drives it.
+  setLockdown: (on) => ipcRenderer.invoke("kiosk:setLockdown", on),
+
   // --- Presage / SmartSpectra camera capture ---
   // Capture runs as a child process of the main process (see main.js), not
   // in the page: the SmartSpectra SDK is a Node module with a native
