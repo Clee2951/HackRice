@@ -355,3 +355,88 @@ def test_duplicate_signups_are_rejected_cleanly(setup):
     response = client.post('/api/v1/auth/signup', json=clash)
     assert response.status_code == 400, response.text
     assert 'display name' in response.json()['detail']
+
+
+def test_frontend_round_trip(setup):
+    """Walks the exact call sequence casino_theme makes, in order.
+
+    The UI is the only consumer of these endpoints, and most of what it
+    depends on is the *shape* of the responses (fields DealModal reads,
+    the phase names StudyRoom switches on, the lesson arriving on the
+    session rather than only in the recall response). A unit test per
+    endpoint would miss a rename that breaks the sequence; this catches it.
+    """
+    client, factory, ai = setup
+    h = account(client, 'roundtrip@example.com')
+
+    # 1. Upload -- blackjackTable.upload()
+    created = client.post('/api/v1/documents', headers=h, files={
+        'file': ('ohms.txt', b'For an ohmic resistor, voltage equals current times resistance. V = IR.', 'text/plain')}).json()
+    did = created['id']
+    assert created['objectives'] and created['title'] == 'ohms.txt'
+
+    # 2. Table cards -- listDocuments()
+    assert [row['id'] for row in client.get('/api/v1/documents', headers=h).json()] == [did]
+
+    # 3. DealModal: objectives + progress, and any resumable sessions
+    detail = client.get(f'/api/v1/documents/{did}', headers=h).json()
+    assert detail['progress'] == {} and detail['objectives'][0]['id'] == 'c1'
+    assert client.get(f'/api/v1/sessions?document_id={did}', headers=h).json() == []
+
+    # 4. Deal me in -- createSession()
+    view = client.post('/api/v1/sessions', headers=h, json={
+        'document_id': did, 'objective_ids': ['c1'], 'study_seconds': 5, 'break_seconds': 5}).json()
+    sid, url = view['id'], f'/api/v1/sessions/{view["id"]}'
+    # StudyRoom's countdown needs both to correct for browser clock skew,
+    # and sizes the Presage capture window from study_seconds.
+    assert view['phase'] == 'study' and view['server_time'] and view['study_seconds'] == 5
+
+    # 5. DocumentPane fetches the original for the iframe.
+    assert client.get(f'/api/v1/documents/{did}/file', headers=h).status_code == 200
+
+    # 6. TutorChat during the study timer.
+    assert client.get(url + '/chat', headers=h).json() == []
+    assert client.post(url + '/chat', headers=h, json={'message': 'What is resistance?'}).json()['answer']
+    assert len(client.get(url + '/chat', headers=h).json()) == 2
+
+    # 7. Timer runs out -> StudyRoom auto-advances into recall.
+    expire(factory, sid)
+    assert client.post(url + '/advance', headers=h).json()['phase'] == 'recall'
+
+    # 8. Presage posts the round's summary while the round is still open.
+    # This is what makes the break longer, so it has to be accepted here.
+    assert client.post(url + '/wellbeing', headers=h, json={
+        'avg_stress': 71.0, 'pct_high_stress': 55.0, 'longest_high_stress_run_sec': 140.0,
+        'blink_rate_per_min': 24.0, 'drowsiness_alert_count': 2,
+        'extend_break': True, 'extra_break_minutes': 3}).status_code == 200
+
+    # 9. RecallPanel submits the brain dump.
+    result = client.post(url + '/recall', headers=h, json={
+        'submission_id': str(uuid4()), 'text': 'V = IR under ohmic conditions.'}).json()
+    assert result['assessment']['items'][0]['concept_id'] == 'c1' and result['lesson']['markdown']
+
+    # 10. StudyRoom re-reads the session; FeedbackPanel renders from it.
+    after = client.get(url, headers=h).json()
+    assert after['phase'] == 'feedback' and after['lesson']['markdown']
+    attempts = client.get(url + '/attempts', headers=h).json()
+    assert attempts[0]['round_number'] == 1 and attempts[0]['result']['assessment']['items']
+
+    # 11. "Take the break" -- the wellbeing report should have lengthened it.
+    breaking = client.post(url + '/advance', headers=h).json()
+    assert breaking['phase'] == 'break'
+    # 5s configured + 3 min extension, rather than the bare 5s.
+    assert breaking['remaining_seconds'] > 180
+
+    # WellbeingPanel reads the numbers back for the current round.
+    reading = client.get(url + '/wellbeing', headers=h).json()[0]
+    assert reading['round_number'] == 1 and reading['extend_break'] and reading['extra_break_minutes'] == 3
+
+    # 12. Break ends -> round 2 opens as "review", and the tutor is back.
+    expire(factory, sid)
+    second = client.post(url + '/advance', headers=h).json()
+    assert second['phase'] == 'review' and second['round_number'] == 2
+    assert client.post(url + '/chat', headers=h, json={'message': 'Recap?'}).status_code == 200
+
+    # 13. Mastery from round 1 is on the document, which is what DealModal
+    # uses to pre-select the weakest objectives next time.
+    assert client.get(f'/api/v1/documents/{did}', headers=h).json()['progress']['c1']['attempt_count'] == 1

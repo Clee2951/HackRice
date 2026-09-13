@@ -205,11 +205,15 @@ export type StudySession = {
   break_seconds: number;
   /** Server-clock epoch seconds, or null in an untimed phase. */
   deadline: number | null;
-  /** The server's clock at the moment it built this response — used to
-   * correct for a browser clock that disagrees with the server's. */
+  /** The server's clock at the moment it built this response. Paired with
+   * `receivedAt` to run the countdown without ever comparing the two
+   * machines' absolute clocks. */
   server_time: number;
   remaining_seconds: number | null;
   lesson: Lesson | null;
+  /** `Date.now()` on THIS machine when the response arrived. Stamped by
+   * the client, not sent by the server. */
+  receivedAt: number;
 };
 
 export type AssessmentItem = {
@@ -324,40 +328,50 @@ export async function getDocumentFileUrl(documentId: number): Promise<string> {
 // Study sessions
 // ---------------------------------------------------------------------------
 
-export function createSession(params: {
+/** Record when a session snapshot reached this machine.
+ *
+ * Everything about the countdown is derived from the gap between
+ * `deadline` and `server_time` (both server-side) plus how long ago this
+ * arrived (both client-side). Neither number is ever compared across
+ * machines, so a browser clock that is minutes off changes nothing. */
+function stamp(session: StudySession): StudySession {
+  return { ...session, receivedAt: Date.now() };
+}
+
+export async function createSession(params: {
   document_id: number;
   objective_ids?: string[];
   study_seconds?: number;
   break_seconds?: number;
 }) {
-  return postJson<StudySession>("/sessions", params);
+  return stamp(await postJson<StudySession>("/sessions", params));
 }
 
-export function listSessions(documentId?: number) {
+export async function listSessions(documentId?: number) {
   const query = documentId === undefined ? "" : `?document_id=${documentId}`;
-  return request<StudySession[]>(`/sessions${query}`);
+  return (await request<StudySession[]>(`/sessions${query}`)).map(stamp);
 }
 
-export function getSession(sessionId: number) {
-  return request<StudySession>(`/sessions/${sessionId}`);
+export async function getSession(sessionId: number) {
+  return stamp(await request<StudySession>(`/sessions/${sessionId}`));
 }
 
 /** Move to the next phase. 409s if the current timer hasn't run out, or if
  * recall hasn't been submitted yet — both are normal, not bugs. */
-export function advanceSession(sessionId: number) {
-  return postJson<StudySession>(`/sessions/${sessionId}/advance`, {});
+export async function advanceSession(sessionId: number) {
+  return stamp(await postJson<StudySession>(`/sessions/${sessionId}/advance`, {}));
 }
 
-export function pauseSession(sessionId: number) {
-  return postJson<StudySession>(`/sessions/${sessionId}/pause`, {});
+export async function pauseSession(sessionId: number) {
+  return stamp(await postJson<StudySession>(`/sessions/${sessionId}/pause`, {}));
 }
 
-export function resumeSession(sessionId: number) {
-  return postJson<StudySession>(`/sessions/${sessionId}/resume`, {});
+export async function resumeSession(sessionId: number) {
+  return stamp(await postJson<StudySession>(`/sessions/${sessionId}/resume`, {}));
 }
 
-export function completeSession(sessionId: number) {
-  return postJson<StudySession>(`/sessions/${sessionId}/complete`, {});
+export async function completeSession(sessionId: number) {
+  return stamp(await postJson<StudySession>(`/sessions/${sessionId}/complete`, {}));
 }
 
 /** Submit the brain dump for this round.
@@ -398,19 +412,26 @@ export function getWellbeing(sessionId: number) {
 // Timer helpers
 // ---------------------------------------------------------------------------
 
-/** Seconds left, corrected for disagreement between the browser and server
- * clocks.
+/** Seconds left on the current phase's timer.
  *
- * The server owns the deadline; trusting `Date.now()` directly against it
- * would show a wrong countdown on any machine whose clock is off — and
- * "wrong" here means the UI lets someone advance early, or stalls at 0:00
- * while the server still says the timer is running. Anchoring on the
- * `server_time` that came back with the session removes the offset. */
+ * Two independent measurements, never mixed:
+ *   `deadline - server_time`   how long the server said was left, server clock
+ *   `now - receivedAt`         how long ago we heard that, browser clock
+ *
+ * Subtracting the second from the first gives a countdown that is correct
+ * even when the two machines' clocks disagree by minutes, because no
+ * server timestamp is ever compared against a browser timestamp.
+ *
+ * The obvious-looking alternative — computing an offset as
+ * `server_time - now` and applying it to `deadline` — is worse than it
+ * looks: the two `now`s cancel and it collapses to the constant
+ * `deadline - server_time`, i.e. a clock frozen at its starting value. */
 export function remainingSeconds(session: StudySession): number | null {
   if (session.paused) return session.remaining_seconds;
   if (session.deadline === null) return null;
-  const skew = session.server_time - Date.now() / 1000;
-  return Math.max(0, session.deadline - (Date.now() / 1000 + skew));
+  const leftAtSnapshot = session.deadline - session.server_time;
+  const sinceSnapshot = (Date.now() - session.receivedAt) / 1000;
+  return Math.max(0, leftAtSnapshot - sinceSnapshot);
 }
 
 export function formatClock(seconds: number | null): string {

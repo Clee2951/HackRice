@@ -293,7 +293,6 @@ export function StudyRoom({ sessionId }: { sessionId: number }) {
               // new recall submission id (see RecallPanel).
               key={session.round_number}
               sessionId={sessionId}
-              roundNumber={session.round_number}
               objectives={(document?.objectives ?? []).filter((objective) =>
                 session.objective_ids.includes(objective.id),
               )}

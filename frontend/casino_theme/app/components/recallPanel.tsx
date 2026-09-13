@@ -11,13 +11,11 @@ import { Objective, submitRecall } from "@/lib/api";
  */
 export function RecallPanel({
   sessionId,
-  roundNumber,
   objectives,
   onAssessed,
   onError,
 }: {
   sessionId: number;
-  roundNumber: number;
   objectives: Objective[];
   onAssessed: () => void | Promise<void>;
   onError: (cause: unknown) => void;
@@ -56,7 +54,6 @@ export function RecallPanel({
   return (
     <div className="flex min-h-0 flex-1 flex-col p-5">
       <div className="mb-3">
-        <p className="text-xs uppercase tracking-[0.25em] text-amber-300/70">Round {roundNumber}</p>
         <h2 className="font-serif text-2xl text-amber-300">Show your hand</h2>
         <p className="mt-1 text-sm text-white/60">
           Book&apos;s closed. Write down everything you remember — messy is fine, the
