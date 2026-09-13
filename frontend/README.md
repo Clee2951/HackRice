@@ -117,6 +117,45 @@ of this app, or a hard crash): press `Ctrl+Shift+Esc` → File → Run new
 task → type `explorer.exe` → Enter. This restarts Explorer instantly,
 no reboot needed.
 
+## How the guaranteed exit button works
+
+There are actually **two** Exit buttons, both calling the same
+`window.kioskAPI.getConfig()`/`requestExit()` bridge:
+
+1. A React one in `casino_theme/app/components/blackjackTable.tsx` — part
+   of the actual UI.
+2. A second one **injected directly by `main.js`**, independent of that
+   React app entirely.
+
+The injected one is the important part, and exists because of a real
+failure mode: the Electron window only shows whatever's at `NEXT_APP_URL`
+(`mainWindow.loadURL(...)`) — if that Next.js dev server isn't running,
+the window shows Chromium's bare connection-error page, which has nothing
+clickable on it at all. Relying solely on the React button means a
+downed dev server = no visible way out.
+
+**How it's injected** (`injectExitOverlay()` in `main.js`):
+- Runs on `webContents.on("dom-ready", ...)` — fires for *any* page this
+  window loads, not just the intended one.
+- `webContents.insertCSS(css)` adds the button/modal styling.
+- `webContents.executeJavaScript(js)` builds the button + PIN modal as
+  plain DOM nodes and appends them to `document.body`, then wires their
+  click handlers to `window.kioskAPI` — the same `contextBridge`-exposed
+  API the React button uses, so there's one IPC code path, not two.
+- Guards against double-injection (`dom-ready` can fire more than once)
+  by checking whether `#__kiosk_exit_btn` already exists before adding
+  anything.
+- Bails out early if `window.kioskAPI` isn't present (e.g. this script
+  somehow ran outside the Electron preload context) rather than injecting
+  a button that can't actually do anything.
+
+**The fallback page** (`did-fail-load` handler): if the real app can't be
+reached, `main.js` loads a minimal inline `data:text/html,...` page
+instead of leaving Chromium's default error page up. That page also
+triggers `dom-ready`, so the injected Exit button appears on it too —
+meaning there's always a working way out, even when the intended UI
+never loads at all.
+
 ## Connecting to your backend
 
 This app expects a FastAPI endpoint at:
@@ -134,7 +173,7 @@ backend then forwards to Vultr Object Storage (S3-compatible) using
 
 | File | Purpose |
 |---|---|
-| `main.js` | Main process: window creation, kiosk hardening, taskbar control, IPC handlers, upload logic |
+| `main.js` | Main process: window creation, injected exit-button overlay, emergency shortcut, taskbar control, IPC handlers, upload logic |
 | `preload.js` | Secure bridge exposing `window.kioskAPI` to the renderer |
 | `taskbar.ps1` | PowerShell helper to hide/show the Windows taskbar |
 | `casino_theme/` | The actual UI — a separate Next.js app, loaded via `NEXT_APP_URL` |
