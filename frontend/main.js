@@ -3,7 +3,7 @@
 // hide/restore (synchronously, so it can't be skipped on exit), and proxies
 // file uploads to the FastAPI backend (which forwards them to Vultr).
 
-const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, Menu } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { execFileSync } = require("child_process");
@@ -14,11 +14,32 @@ require("dotenv").config({ path: path.join(__dirname, ".env") });
 const BACKEND_URL = process.env.BACKEND_URL || "http://127.0.0.1:8000";
 const NEXT_APP_URL = process.env.NEXT_APP_URL || "http://localhost:3000";
 const EXIT_PIN = process.env.EXIT_PIN || "";
-const IS_KIOSK = process.argv.includes("--kiosk");
+// Kiosk/lockdown is the DEFAULT now, not opt-in -- this app's whole purpose
+// is lockdown, so plain `npm start` should actually attempt it. Pass
+// --no-kiosk for local development (resizable window, no focus-stealing,
+// easy to Cmd+Tab away from while iterating).
+const IS_KIOSK = !process.argv.includes("--no-kiosk");
 const TASKBAR_SCRIPT = path.join(__dirname, "taskbar.ps1");
+
+// IMPORTANT, honest limitation: none of the hardening below achieves a true
+// LockDown-Browser-style block. On macOS in particular, Cmd+Tab and Mission
+// Control are OS-reserved shortcuts that Apple deliberately prevents
+// ordinary (non-entitled) apps from intercepting -- that's intentional OS
+// security design, not a bug here. Real lockdown-browser products need
+// special system-level installers/entitlements to do this. What follows are
+// the practical mitigations actually available from a normal Electron app:
+// stealing focus back immediately (blur handler), staying visually on top,
+// and removing the few shortcuts/menu items Electron itself adds (Cmd+Q,
+// Cmd+H, Cmd+M) that we CAN control. Treat this as a deterrent, not a
+// guarantee -- document that clearly wherever this app's capabilities are
+// described (README, demo narrative), same honesty standard as the
+// stress-detection heuristics in presage/.
 
 let mainWindow;
 let taskbarCurrentlyHidden = false;
+// Only the exit-button/PIN flow (kiosk:requestExit) is allowed to actually
+// close the window while in kiosk mode -- see the 'close' handler below.
+let allowClose = false;
 
 // ---------------------------------------------------------------------------
 // Taskbar control (Windows only). Runs SYNCHRONOUSLY on purpose: if this were
@@ -75,6 +96,24 @@ function createWindow() {
     // Re-hide every time this window regains focus -- this is the fix for
     // the taskbar reappearing after the native "Open File" dialog closes.
     mainWindow.on("focus", () => setTaskbar("hide"));
+
+    // Best-effort deterrent, not a real block (see the limitation note at
+    // the top of this file): steal focus back immediately if the user
+    // manages to switch away, and keep the window above everything else at
+    // the highest level Electron exposes.
+    mainWindow.on("blur", () => {
+      if (!mainWindow) return;
+      mainWindow.show();
+      mainWindow.focus();
+    });
+    mainWindow.setAlwaysOnTop(true, "screen-saver");
+
+    // Block the window from closing except through the exit-button/PIN
+    // flow -- otherwise Cmd+W/Alt+F4 or a stray close request would bypass
+    // it entirely.
+    mainWindow.on("close", (event) => {
+      if (!allowClose) event.preventDefault();
+    });
   }
 
   mainWindow.on("closed", () => {
@@ -89,6 +128,12 @@ app.whenReady().then(() => {
   // Startup safety net: if a previous run crashed and left the taskbar
   // hidden, force-restore it before we potentially hide it again.
   restoreTaskbarIfNeeded();
+
+  // Electron adds a default macOS app menu (with Cmd+Q, Cmd+H, Cmd+M bound
+  // to it) even with no menu bar visible -- removing it removes those
+  // shortcuts too. Only the ones we can actually control; see the
+  // limitation note at the top of this file for Cmd+Tab/Mission Control.
+  if (IS_KIOSK) Menu.setApplicationMenu(null);
 
   createWindow();
 
@@ -133,6 +178,7 @@ ipcMain.handle("kiosk:requestExit", async (_event, enteredPin) => {
   if (EXIT_PIN && enteredPin !== EXIT_PIN) {
     return { success: false, message: "Incorrect PIN." };
   }
+  allowClose = true; // lets the 'close' handler's kiosk-mode block stand down for this quit
   restoreTaskbarIfNeeded();
   app.quit();
   return { success: true };

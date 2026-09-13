@@ -1,35 +1,67 @@
 # HackRice Kiosk (Electron)
 
-A standalone kiosk app with:
-- Full-screen kiosk mode with a visible **✕ Exit** button (optional PIN)
+An Electron shell around the `casino_theme/` Next.js UI, with:
+- Kiosk/lockdown mode **on by default** (full-screen, taskbar hidden on
+  Windows, focus-stealing deterrent — see the limitation note below)
+- A visible **EXIT** button in the UI (top-right) with an optional PIN,
+  wired through `preload.js`'s `window.kioskAPI`
 - Drag-and-drop / "Choose File" upload, proxied to your FastAPI backend
-  (which forwards to Vultr Object Storage -- the secret key never lives
+  (which forwards to Vultr Object Storage — the secret key never lives
   in this app)
 - Windows taskbar auto-hide/restore that survives the native file dialog
   and every possible exit path (clean exit, crash, SIGINT/SIGTERM)
 
+## ⚠️ Honest limitation: this is a deterrent, not a real lockdown
+
+**There is no way for a normal Electron app to reliably block Cmd+Tab or
+Mission Control on macOS** (or, generally, low-level OS shortcuts on any
+platform) — that's intentional OS security design, not a bug here. Real
+"LockDown Browser"-style products need special system-level
+installers/entitlements to do that; a BrowserWindow API doesn't have
+access to those mechanisms.
+
+What this app actually does when in kiosk mode:
+- Steals focus back immediately if you switch away (`blur` → `focus()`)
+- Stays visually always-on-top at the highest level Electron exposes
+- Removes the macOS default app menu (and the Cmd+Q/Cmd+H/Cmd+M shortcuts
+  bound to it)
+- Blocks the window from closing except through the Exit button/PIN flow
+
+Treat all of that as "makes leaving annoying," not "makes leaving
+impossible." State this plainly in any demo/report — don't oversell it.
+
 ## Setup
 
 ```bash
-cd kiosk
+cd frontend
 npm install
-cp .env.example .env   # edit BACKEND_URL / EXIT_PIN as needed
+cp .env.example .env   # edit BACKEND_URL / EXIT_PIN / NEXT_APP_URL as needed
+cd casino_theme && npm install   # the actual UI is a separate Next.js app
 ```
 
 ## Running
 
-**Preview mode (normal window, safe to test in):**
+You need **both** running at once — the Electron shell only displays
+whatever's at `NEXT_APP_URL` (default `http://localhost:3000`), it doesn't
+serve the UI itself:
+
 ```bash
-npm start
+# terminal 1
+cd frontend/casino_theme && npm run dev
+
+# terminal 2
+cd frontend && npm start
 ```
 
-**True kiosk mode (full-screen, taskbar hidden on Windows):**
+**Kiosk/lockdown mode is now the default** (`npm start`). For local
+development — a normal resizable window, no focus-stealing, easy to
+Cmd+Tab away from while iterating — use:
 ```bash
-npm start -- --kiosk
+npm run dev
 ```
 
-To get out of kiosk mode, click the **✕ Exit** button (top-right) and
-confirm. If you set `EXIT_PIN` in `.env`, it'll ask for that PIN first.
+To get out of kiosk mode, click the **EXIT** button (top-right) in the UI
+and confirm. If you set `EXIT_PIN` in `.env`, it'll ask for that PIN first.
 
 ## Building a standalone installer
 
@@ -84,10 +116,8 @@ backend then forwards to Vultr Object Storage (S3-compatible) using
 
 | File | Purpose |
 |---|---|
-| `main.js` | Main process: window creation, taskbar control, IPC handlers, upload logic |
+| `main.js` | Main process: window creation, kiosk hardening, taskbar control, IPC handlers, upload logic |
 | `preload.js` | Secure bridge exposing `window.kioskAPI` to the renderer |
 | `taskbar.ps1` | PowerShell helper to hide/show the Windows taskbar |
-| `renderer/index.html` | Kiosk UI markup |
-| `renderer/style.css` | Kiosk UI styling |
-| `renderer/renderer.js` | Kiosk UI behavior: exit modal, drag-and-drop, upload status |
-| `.env.example` | Template for `BACKEND_URL` / `EXIT_PIN` |
+| `casino_theme/` | The actual UI — a separate Next.js app, loaded via `NEXT_APP_URL` |
+| `.env.example` | Template for `BACKEND_URL` / `EXIT_PIN` / `NEXT_APP_URL` |
