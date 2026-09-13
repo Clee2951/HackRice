@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 backend/.env
+# Vultr Managed Database CA cert (see docs/vultr-mysql-setup.md) -- not
+# secret by itself, but keep certs/credentials out of git as a habit.
+*.pem
 
 # Node
 node_modules/

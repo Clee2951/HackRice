@@ -3,10 +3,10 @@ import time
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm.exc import StaleDataError
-from backend.models.document import Document
+from backend.models.document import Document, DocumentObject
 from backend.models.study import StudySession, RecallAttempt, WellbeingReading
 from backend.schemas.study import Assessment, Lesson
-from backend.services.document_service import check_pages
+from backend.services import document_service
 from backend.ai import prompts
 
 
@@ -19,7 +19,9 @@ def commit(db):
 
 
 def owned_document(db, user_id, document_id):
-    obj = db.query(Document).filter_by(id=document_id, owner_id=user_id).first()
+    # documents' PK is (uid, document_id) -- document_id alone isn't
+    # globally unique, so both are required to find the right row.
+    obj = db.query(Document).filter_by(uid=user_id, document_id=document_id).first()
     if not obj:
         raise HTTPException(404, "Document not found")
     return obj
@@ -32,8 +34,20 @@ def owned_session(db, user_id, session_id):
     return obj
 
 
-def selected(doc, session):
-    return [obj for obj in doc.objectives if obj["id"] in session.objective_ids]
+def objects_of(db, doc):
+    # Raw document_objects rows for this document, in extraction order.
+    return (db.query(DocumentObject)
+              .filter_by(uid=doc.uid, document_id=doc.document_id)
+              .order_by(DocumentObject.object_id)
+              .all())
+
+
+def objects_view(db, doc):
+    return [document_service.object_view(o) for o in objects_of(db, doc)]
+
+
+def selected(objects, session):
+    return [obj for obj in objects if obj["id"] in session.objective_ids]
 
 
 def remaining(session):
@@ -120,8 +134,10 @@ def assess_recall(db, doc, session, request, ai):
     ensure_active(session)
     if session.phase != "recall":
         raise HTTPException(409, "Session must be in recall phase")
-    objectives = selected(doc, session)
-    payload = {"source": doc.pages, "objectives": objectives, "student_answer": request.text}
+    rows = objects_of(db, doc)
+    views = [document_service.object_view(o) for o in rows]
+    objectives = selected(views, session)
+    payload = {"source": views, "objectives": objectives, "student_answer": request.text}
     assessment = ai.structured(prompts.ASSESS, payload, Assessment)
     ids = [item.concept_id for item in assessment.items]
     if len(ids) != len(set(ids)) or set(ids) != set(session.objective_ids):
@@ -132,7 +148,7 @@ def assess_recall(db, doc, session, request, ai):
         if item.status != "not_demonstrated" and not item.evidence:
             raise HTTPException(502, "AI assessment lacked supporting evidence; retry")
     lesson = ai.structured(prompts.LESSON, {**payload, "assessment": assessment.model_dump()}, Lesson)
-    check_pages(lesson.source_pages, doc.pages)
+    document_service.check_cited_pages(lesson.source_pages, rows)
     result = {"assessment": assessment.model_dump(), "lesson": lesson.model_dump()}
     db.add(RecallAttempt(session_id=session.id, round_number=session.round_number,
                          submission_id=submission_id, text=request.text, assessment=result))

@@ -6,7 +6,7 @@ from backend.core.config import ROOT, settings
 from backend.db.session import engine
 from backend.db.base_class import Base
 from backend.models.user import User
-from backend.models.document import Document
+from backend.models.document import Document, DocumentObject
 from backend.models.study import StudySession, RecallAttempt, ChatMessage, WellbeingReading
 from backend.api.v1.api import api_router
 
