@@ -63,7 +63,7 @@ export default function Home() {
           <p className="text-center text-xs uppercase tracking-[0.3em] text-amber-300">
             {mode === "login" ? "Welcome back" : "Join the table"}
           </p>
-          <h1 className="mt-3 text-center font-serif text-4xl font-bold text-amber-400">Enter ze Table</h1>
+          <h1 className="mt-3 text-center font-serif text-4xl font-bold text-amber-400">Enter the Table</h1>
 
           <form onSubmit={handleSubmit} className="mt-8 space-y-5">
             <label className="block text-sm text-white/80">
