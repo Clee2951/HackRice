@@ -99,7 +99,7 @@ export function BlackjackTable() {
       });
 
       if (!uploadRes.ok) {
-        throw new Error("Upload to Vultr failed");
+        throw new Error("Fail to upload file to Cloud Storage");
       }
 
       setDocuments((current) => [
@@ -111,8 +111,8 @@ export function BlackjackTable() {
         },
       ]);
     } catch (err) {
-      console.error("Vultr upload error:", err);
-      alert("Error uploading file to Vultr.");
+      console.error("Cloud Storage upload error:", err);
+      alert("Error uploading file to Cloud Storage.");
     }
   }
 
@@ -197,7 +197,7 @@ export function BlackjackTable() {
             flex items-center justify-center font-serif hover:scale-105 active:scale-95 duration-300 ease-in-out cursor-pointer font-extrabold text-gold"
             style={{ width: "34%", height: "12%" }}
           >
-            <span>UPLOAD TO VULTR</span>
+            <span>UPLOAD YOUR DOCUMENT</span>
             <input 
               type="file" 
               className="hidden" 
