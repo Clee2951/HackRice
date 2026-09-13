@@ -277,7 +277,7 @@ def test_gemini_adapter_validation(monkeypatch):
     result = adapter.structured(prompts.CHAT, {'question': 'Explain'}, ChatAnswer)
     assert result.answer == 'Example answer'
     assert captured['model'] == 'test-model'
-    assert captured['config'].response_schema is ChatAnswer
+    assert captured['config'].response_json_schema == ChatAnswer.model_json_schema()
     adapter.client.models.generate_content = lambda **kwargs: SimpleNamespace(text='not json')
     with pytest.raises(HTTPException) as caught:
         adapter.structured(prompts.CHAT, {}, ChatAnswer)

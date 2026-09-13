@@ -18,6 +18,11 @@ __pycache__/
 .venv-local/
 venv/
 
+# Local dev databases. These are per-developer scratch state -- committing
+# them means every teammate's study.db conflicts with every other one's.
+# The schema is recreated on startup by Base.metadata.create_all().
+*.db
+
 # OS
 .DS_Store
 
