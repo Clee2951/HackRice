@@ -28,8 +28,15 @@ if not key:
 
 from google import genai  # noqa: E402  (imported after the key check so a missing key is the first thing reported)
 
+# Hold the client in a variable. models.list() returns a lazy pager, so
+# `genai.Client(...).models.list()` leaves nothing referencing the client:
+# Python collects it part-way through iteration, its HTTP session closes,
+# and the next page fails with "Cannot send a request, as the client has
+# been closed" -- which reads like a key or network problem and is neither.
+client = genai.Client(api_key=key)
+
 try:
-    models = list(genai.Client(api_key=key).models.list())
+    models = list(client.models.list())
 except Exception as exc:  # noqa: BLE001 -- surface the provider's own wording
     sys.exit(f"Could not reach Google with that key:\n  {type(exc).__name__}: {exc}")
 
@@ -77,7 +84,7 @@ class Probe(BaseModel):
 try:
     from google.genai import types
 
-    reply = genai.Client(api_key=key).models.generate_content(
+    reply = client.models.generate_content(
         model=configured,
         contents='Reply with {"ok": true}',
         config=types.GenerateContentConfig(
