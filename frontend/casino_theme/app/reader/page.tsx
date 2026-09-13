@@ -1,28 +1,25 @@
 "use client";
 
-import { useSearchParams } from "next/navigation";
-import { Suspense } from "react";
-import { PdfRead } from "../components/pdfRead";
-
-function toFileUrl(filePath: string) {
-  if (filePath.startsWith("file://")) return filePath;
-  return `file:///${encodeURI(filePath.replaceAll("\\", "/"))}`;
-}
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect } from "react";
+import { StudyRoom } from "../components/studyRoom";
+import { getToken } from "@/lib/api";
 
 function ReaderContent() {
+  const router = useRouter();
   const searchParams = useSearchParams();
-  const filePath = searchParams.get("path");
-  const fileName = searchParams.get("name") || "Selected study document";
+  const raw = searchParams.get("session");
+  const sessionId = raw === null ? NaN : Number(raw);
 
-  return (
-    <PdfRead
-      document={
-        filePath
-          ? { title: fileName, src: toFileUrl(filePath) }
-          : undefined
-      }
-    />
-  );
+  // A study session is per-user state behind a bearer token, so an
+  // unauthenticated arrival here (bookmark, reload after logout) belongs
+  // back at the login card rather than at a wall of 401s.
+  useEffect(() => {
+    if (!getToken() || !Number.isFinite(sessionId)) router.replace("/");
+  }, [router, sessionId]);
+
+  if (!Number.isFinite(sessionId)) return <div className="min-h-svh bg-neutral-950" />;
+  return <StudyRoom sessionId={sessionId} />;
 }
 
 export default function ReaderPage() {

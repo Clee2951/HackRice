@@ -6,14 +6,24 @@
 const { app, BrowserWindow, ipcMain, dialog, Menu, globalShortcut } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const { execFileSync } = require("child_process");
-const https = require("https");
-const http = require("http");
+const { execFileSync, spawn } = require("child_process");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
+// The SmartSpectra key lives in the REPO ROOT .env, not frontend/.env --
+// presage/package.json already reads it from there (`node --env-file=../.env`),
+// and duplicating a key into a second file is how the two copies drift.
+require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://127.0.0.1:8000";
 const NEXT_APP_URL = process.env.NEXT_APP_URL || "http://localhost:3000";
 const EXIT_PIN = process.env.EXIT_PIN || "";
+const PRESAGE_DIR = path.join(__dirname, "..", "presage");
+const PRESAGE_SCRIPT = path.join(PRESAGE_DIR, "session.mjs");
+// Which node runs the capture script. Deliberately a real node binary
+// rather than Electron-as-node (ELECTRON_RUN_AS_NODE): the SmartSpectra
+// SDK ships a native addon built against system Node's ABI, and loading it
+// under Electron's V8 is a version-mismatch crash waiting to happen.
+// Override if node isn't on PATH under whatever launched the app.
+const PRESAGE_NODE = process.env.PRESAGE_NODE || "node";
 // Kiosk/lockdown is the DEFAULT now, not opt-in -- this app's whole purpose
 // is lockdown, so plain `npm start` should actually attempt it. Pass
 // --no-kiosk for local development (resizable window, no focus-stealing,
@@ -322,7 +332,13 @@ ipcMain.handle("kiosk:requestExit", async (_event, enteredPin) => {
 });
 
 ipcMain.handle("kiosk:getConfig", async () => {
-  return { requiresPin: Boolean(EXIT_PIN) };
+  return {
+    requiresPin: Boolean(EXIT_PIN),
+    backendUrl: BACKEND_URL,
+    // Lets the wellbeing panel say "no key configured" instead of showing
+    // a camera section that can never start.
+    hasPresageKey: Boolean(process.env.SMARTSPECTRA_API_KEY),
+  };
 });
 
 // ---------------------------------------------------------------------------
@@ -349,70 +365,166 @@ ipcMain.handle("kiosk:pickFile", async () => {
   }
 
   const filePath = result.filePaths[0];
-  return { canceled: false, filePath, fileName: path.basename(filePath) };
+  // Hand back the bytes, not just the path. The renderer uploads through
+  // the ordinary authenticated POST /api/v1/documents -- it holds the
+  // bearer token, the main process doesn't. Reading here keeps the
+  // renderer free of filesystem access, so contextIsolation stays intact.
+  try {
+    const data = fs.readFileSync(filePath);
+    return {
+      canceled: false,
+      filePath,
+      fileName: path.basename(filePath),
+      // Sliced to an exact ArrayBuffer: a Node Buffer is a view into a
+      // shared pool, and structured-cloning it whole would ship
+      // unrelated memory across the bridge.
+      data: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+    };
+  } catch (err) {
+    return { canceled: true, error: `Could not read ${path.basename(filePath)}: ${err.message}` };
+  }
 });
 
 // ---------------------------------------------------------------------------
-// IPC: upload a file to the backend, which forwards it to Vultr Object
-// Storage. Reading the file and making the HTTP request happens here in the
-// main process, so the renderer never needs raw filesystem or network
-// access (contextIsolation stays intact).
+// IPC: Presage / SmartSpectra camera capture
 // ---------------------------------------------------------------------------
-ipcMain.handle("kiosk:uploadFile", async (_event, filePath) => {
-  return new Promise((resolve) => {
-    try {
-      const fileName = path.basename(filePath);
-      const fileData = fs.readFileSync(filePath);
-      const boundary = `----KioskBoundary${Date.now()}`;
+// Runs presage/session.mjs as a child process for the duration of one
+// study/review round. That script owns the camera, the stress analysis
+// (presage/stress.mjs) and the drowsiness detection (presage/drowsiness.mjs),
+// and posts its own summary to POST /sessions/{id}/wellbeing when the
+// section ends -- which is what lets a stressful round extend the next
+// break. Nothing here re-implements any of that; this only starts it with
+// the right session, relays a few lines back to the UI, and stops it.
+//
+// A previous version of the app had the renderer ask the MAIN process to
+// upload files to /api/v1/upload/ -- an endpoint that does not exist in
+// this backend (it was backend-GI's) and that the main process could not
+// have authenticated against anyway, since the bearer token lives in the
+// renderer. That handler is gone; uploads go through the renderer's own
+// authenticated API client.
 
-      const payloadStart = Buffer.from(
-        `--${boundary}\r\n` +
-          `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
-          `Content-Type: application/octet-stream\r\n\r\n`
-      );
-      const payloadEnd = Buffer.from(`\r\n--${boundary}--\r\n`);
-      const body = Buffer.concat([payloadStart, fileData, payloadEnd]);
+let presageProcess = null;
 
-      const url = new URL(`${BACKEND_URL}/api/v1/upload/`);
-      const client = url.protocol === "https:" ? https : http;
+function sendPresageEvent(event) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("presage:event", event);
+  }
+}
 
-      const req = client.request(
-        {
-          hostname: url.hostname,
-          port: url.port || (url.protocol === "https:" ? 443 : 80),
-          path: url.pathname,
-          method: "POST",
-          headers: {
-            "Content-Type": `multipart/form-data; boundary=${boundary}`,
-            "Content-Length": body.length,
-          },
-        },
-        (res) => {
-          let data = "";
-          res.on("data", (chunk) => (data += chunk));
-          res.on("end", () => {
-            if (res.statusCode >= 200 && res.statusCode < 300) {
-              resolve({ success: true, status: res.statusCode, body: data });
-            } else {
-              resolve({
-                success: false,
-                status: res.statusCode,
-                message: `Server responded with ${res.statusCode}`,
-                body: data,
-              });
-            }
-          });
-        }
-      );
+/** Pull the few lines the UI cares about out of the capture script's stdout.
+ *
+ * Deliberately loose matching: session.mjs prints for a human, and a
+ * missed line costs a status update, not a broken session. The numbers
+ * that actually matter reach the backend directly from that script. */
+function interpretPresageLine(line) {
+  if (line.includes("WAKE UP")) {
+    sendPresageEvent({ type: "drowsiness", message: line.replace(/^!+\s*/, "").replace(/\s*!+$/, "") });
+    return;
+  }
+  if (line.startsWith("Section started")) {
+    sendPresageEvent({ type: "status", status: "running", message: "Watching for stress and drowsiness." });
+    return;
+  }
+  const extended = /Recommend \+(\d+) min break/.exec(line);
+  if (extended) {
+    sendPresageEvent({ type: "summary", extendBreak: true, extraBreakMinutes: Number(extended[1]) });
+    return;
+  }
+  if (line.includes("No sustained high stress")) {
+    sendPresageEvent({ type: "summary", extendBreak: false, extraBreakMinutes: 0 });
+  }
+}
 
-      req.on("error", (err) => {
-        resolve({ success: false, message: err.message });
-      });
+function stopPresage() {
+  if (!presageProcess) return;
+  const child = presageProcess;
+  presageProcess = null;
+  // SIGTERM, not SIGKILL: session.mjs traps it, stops the camera cleanly
+  // and POSTs the round's wellbeing summary on the way out. Killing it
+  // outright would throw away the measurement the round was for.
+  child.kill("SIGTERM");
+  // Backstop in case it wedges -- a stuck camera process would hold the
+  // device and block the next round from starting.
+  setTimeout(() => {
+    if (!child.killed) child.kill("SIGKILL");
+  }, 5000);
+}
 
-      req.write(body);
-      req.end();
-    } catch (err) {
-      resolve({ success: false, message: err.message });
+ipcMain.handle("presage:start", async (_event, options = {}) => {
+  const { sessionId, token, sectionMinutes, breakSeconds } = options;
+  if (!process.env.SMARTSPECTRA_API_KEY) {
+    sendPresageEvent({ type: "status", status: "error", message: "No SMARTSPECTRA_API_KEY set." });
+    return { started: false, message: "No SMARTSPECTRA_API_KEY set in the repo-root .env." };
+  }
+  if (!fs.existsSync(PRESAGE_SCRIPT)) {
+    sendPresageEvent({ type: "status", status: "error", message: "Capture script not found." });
+    return { started: false, message: `Missing ${PRESAGE_SCRIPT}` };
+  }
+  if (presageProcess) stopPresage();
+
+  sendPresageEvent({ type: "status", status: "starting" });
+  const child = spawn(PRESAGE_NODE, [PRESAGE_SCRIPT], {
+    cwd: PRESAGE_DIR,
+    env: {
+      ...process.env,
+      // STUDY_SESSION_ID is always set here, so session.mjs attaches to
+      // the session the UI already created rather than creating a second
+      // one of its own.
+      STUDY_SESSION_ID: String(sessionId),
+      AUTH_TOKEN: token,
+      BACKEND_URL,
+      SECTION_MINUTES: String(sectionMinutes ?? 25),
+      BREAK_SECONDS: String(breakSeconds ?? 300),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  presageProcess = child;
+
+  let stdoutTail = "";
+  child.stdout.on("data", (chunk) => {
+    stdoutTail += chunk.toString();
+    const lines = stdoutTail.split("\n");
+    // Keep the last, possibly-incomplete line for the next chunk.
+    stdoutTail = lines.pop() ?? "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed) {
+        console.log(`[presage] ${trimmed}`);
+        interpretPresageLine(trimmed);
+      }
     }
   });
+
+  child.stderr.on("data", (chunk) => console.error(`[presage] ${chunk.toString().trim()}`));
+
+  child.on("error", (err) => {
+    presageProcess = null;
+    const message =
+      err.code === "ENOENT"
+        ? `Could not run "${PRESAGE_NODE}". Install Node.js or set PRESAGE_NODE to its path.`
+        : err.message;
+    console.error(`[presage] ${message}`);
+    sendPresageEvent({ type: "status", status: "error", message });
+  });
+
+  child.on("exit", (code, signal) => {
+    if (presageProcess === child) presageProcess = null;
+    // A SIGTERM exit is this app stopping the round on purpose, not a fault.
+    if (signal === "SIGTERM" || code === 0) {
+      sendPresageEvent({ type: "status", status: "stopped" });
+    } else {
+      sendPresageEvent({ type: "status", status: "error", message: `Capture exited (code ${code}).` });
+    }
+  });
+
+  return { started: true };
 });
+
+ipcMain.handle("presage:stop", async () => {
+  stopPresage();
+  return { stopped: true };
+});
+
+// Never leave a camera process running after the window is gone.
+app.on("before-quit", stopPresage);
+app.on("window-all-closed", stopPresage);

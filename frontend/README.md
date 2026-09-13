@@ -158,23 +158,50 @@ never loads at all.
 
 ## Connecting to your backend
 
-This app expects a FastAPI endpoint at:
+The renderer talks to the backend directly, using the bearer token it got
+at login. The main process does **not** upload anything itself: it has no
+token, and adding an unauthenticated upload route so it could would be a
+hole in the API. `kiosk:pickFile` therefore hands the renderer the file's
+*bytes* along with its name, and the renderer POSTs them to
+`/api/v1/documents` — the same endpoint the browser build uses — where
+Gemini extracts the learning objectives.
 
-```
-POST {BACKEND_URL}/api/v1/upload/
-```
+(An earlier version posted to `POST {BACKEND_URL}/api/v1/upload/` from the
+main process. That endpoint does not exist in `backend/` — it belonged to
+`backend-GI/` — so that path never worked.)
 
-accepting a `multipart/form-data` body with a `file` field, which your
-backend then forwards to Vultr Object Storage (S3-compatible) using
-`boto3`. Your Vultr access/secret keys should live only in
-`backend/.env`, never in this Electron app.
+Vultr access/secret keys live only in `backend/.env`, never in this
+Electron app. See `docs/vultr-object-storage.md`.
+
+## Presage camera capture
+
+During each study/review round the main process spawns
+`presage/session.mjs` as a child process, passing it the active
+`STUDY_SESSION_ID` and the logged-in `AUTH_TOKEN`. That script owns the
+camera and posts its own stress/drowsiness summary to
+`POST /api/v1/sessions/{id}/wellbeing` when the round ends, which is what
+lets a stressful round extend the *next* break.
+
+- The API key comes from the **repo-root** `.env`
+  (`SMARTSPECTRA_API_KEY`), the same file `presage/`'s own npm scripts
+  read — not from `frontend/.env`.
+- Run `npm install` inside `presage/` first, or the spawn fails on a
+  missing `@smartspectra/node-sdk`.
+- Capture runs under a real `node` binary, **not** Electron-as-node: the
+  SDK ships a native addon built against system Node's ABI. Set
+  `PRESAGE_NODE` if `node` isn't on the PATH of whatever launches the app.
+- Stopping a round sends `SIGTERM`, which `session.mjs` traps so it can
+  release the camera and post its summary. Killing it outright would
+  throw away the measurement the round existed to take.
+- With no key set, the UI's wellbeing panel says the camera is
+  unavailable and everything else works normally.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `main.js` | Main process: window creation, injected exit-button overlay, emergency shortcut, taskbar control, IPC handlers, upload logic |
+| `main.js` | Main process: window creation, injected exit-button overlay, emergency shortcut, taskbar control, IPC handlers, Presage capture lifecycle |
 | `preload.js` | Secure bridge exposing `window.kioskAPI` to the renderer |
 | `taskbar.ps1` | PowerShell helper to hide/show the Windows taskbar |
 | `casino_theme/` | The actual UI — a separate Next.js app, loaded via `NEXT_APP_URL` |
-| `.env.example` | Template for `BACKEND_URL` / `EXIT_PIN` / `NEXT_APP_URL` |
+| `.env.example` | Template for `BACKEND_URL` / `NEXT_APP_URL` / `EXIT_PIN` / `PRESAGE_NODE` |

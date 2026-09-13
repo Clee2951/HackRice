@@ -16,6 +16,16 @@ class Settings(BaseSettings):
     MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024
     MAX_DOCUMENT_CHARS: int = 60000
     MAX_PDF_PAGES: int = 50
-    CORS_ORIGINS: list[str] = ["http://localhost:5500", "http://127.0.0.1:5500"]
+    CORS_ORIGINS: list[str] = ["http://localhost:5500", "http://127.0.0.1:5500",
+                               "http://localhost:3000", "http://127.0.0.1:3000"]
+    # Vultr Object Storage (S3-compatible) for uploaded document originals.
+    # All four are optional: when any is blank, services/storage.py reports
+    # itself unconfigured and document originals are kept in the database
+    # instead. See docs/vultr-object-storage.md.
+    VULTR_STORAGE_ENDPOINT: str = ""
+    VULTR_ACCESS_KEY: str = ""
+    VULTR_SECRET_KEY: str = ""
+    VULTR_STORAGE_BUCKET: str = ""
+    VULTR_STORAGE_REGION: str = ""
 
 settings = Settings()

@@ -12,4 +12,7 @@ python-docx>=1.0.0
 # Pure-Python MySQL driver for the Vultr Managed Database (no system
 # libmysqlclient needed, unlike mysqlclient -- simplest option for a
 # hackathon dev machine).
-PyMySQL>=1.1,<2
+PyMySQL>=1.1,<2# S3 client for Vultr Object Storage (backend/services/storage.py). Only
+# exercised when the VULTR_* settings are filled in; the import is lazy so
+# this stays installable-but-unused for local SQLite development.
+boto3>=1.34,<2
