@@ -1,5 +1,5 @@
 import time
-from sqlalchemy import Column, Integer, String, Text, JSON, LargeBinary, ForeignKey, ForeignKeyConstraint, Float
+from sqlalchemy import Column, Integer, String, Text, JSON, LargeBinary, ForeignKey, ForeignKeyConstraint, Double
 from backend.db.base_class import Base
 
 class Document(Base):
@@ -20,7 +20,9 @@ class Document(Base):
     original = Column(LargeBinary, nullable=False)
     progress = Column(JSON, nullable=False, default=dict)
     revision = Column(Integer, nullable=False, default=1)
-    created_at = Column(Float, default=time.time, nullable=False)
+    # Double, not Float -- see the note on StudySession.deadline in
+    # models/study.py for why a Unix timestamp needs it.
+    created_at = Column(Double, default=time.time, nullable=False)
     __mapper_args__ = {"version_id_col": revision}
 
 
@@ -46,7 +48,7 @@ class DocumentObject(Base):
     # (document_service.check_pages) needs all of them. Column NAME kept as
     # `source_page` to match the schema; VALUE is a list[int].
     source_page = Column(JSON, nullable=True)
-    created_at = Column(Float, default=time.time, nullable=False)
+    created_at = Column(Double, default=time.time, nullable=False)  # see the Double note above
     __table_args__ = (
         ForeignKeyConstraint(
             ["uid", "document_id"], ["documents.uid", "documents.document_id"],

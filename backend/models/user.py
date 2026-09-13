@@ -1,5 +1,5 @@
 import time
-from sqlalchemy import Column, Integer, String, Boolean, Float
+from sqlalchemy import Column, Integer, String, Boolean, Double
 
 from backend.db.base_class import Base
 
@@ -25,4 +25,6 @@ class User(Base):
     # column's value against the incoming token's `sub`+iat here first.
     auth_token = Column(String(255), nullable=True)
     is_active = Column(Boolean(), default=True)
-    created_at = Column(Float, default=time.time, nullable=False)
+    # Double, not Float -- see the note on StudySession.deadline in
+    # models/study.py for why a Unix timestamp needs it.
+    created_at = Column(Double, default=time.time, nullable=False)

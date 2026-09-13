@@ -97,6 +97,29 @@ DDL against SQLAlchemy's MySQL dialect directly
 (`CreateTable(table).compile(dialect=mysql.dialect())`) — catches this
 class of bug without needing a live server.
 
+**A second, more serious bug only showed up against a real MySQL
+server, not the dialect-compile check above**: every `deadline`,
+`remaining_seconds`, and `created_at` column used SQLAlchemy's generic
+`Float`, which compiles to MySQL's 32-bit single-precision `FLOAT`
+(~7 significant digits). A Unix timestamp needs ~10-11 digits, so MySQL
+was silently rounding every stored timestamp to the nearest ~100-500
+seconds. Concretely: create a study session with `study_seconds=600`,
+and the stored `deadline` could already read as several hundred seconds
+in the *past* by the time it was read back — a timer that's supposed to
+be a study/break/review length ends up wrong by an amount roughly the
+size of the timestamp's own rounding error, not a fixed offset. SQLite
+(what the test suite uses) stores Python floats at full 64-bit precision,
+so this was invisible in every automated test and only surfaced during a
+live end-to-end run against the real database. Fixed by switching every
+timestamp/deadline column to SQLAlchemy's `Double` type (portable across
+dialects: `DOUBLE` on MySQL, still a plain float on SQLite). The four
+0-100-range `WellbeingReading` metrics (`avg_stress` etc.) stayed
+`Float` — `float32`'s ~7 digits of precision is plenty for a value in
+that range, only large-magnitude values like timestamps are affected.
+**Lesson for next time**: a DDL-compile check catches syntax/type
+mismatches, not precision/rounding behavior — that class of bug needs an
+actual round-trip through the real database engine to catch.
+
 ## API-visible changes
 
 - `GET /documents/{id}/content`: `{"pages": [...]}` → `{"objects": [...]}`

@@ -1,5 +1,5 @@
 import time
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, ForeignKeyConstraint, JSON, Float, Boolean, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Text, ForeignKey, ForeignKeyConstraint, JSON, Float, Double, Boolean, UniqueConstraint
 from backend.db.base_class import Base
 
 class StudySession(Base):
@@ -12,8 +12,13 @@ class StudySession(Base):
     paused = Column(Boolean, nullable=False, default=False)
     study_seconds = Column(Integer, nullable=False)
     break_seconds = Column(Integer, nullable=False)
-    deadline = Column(Float, nullable=True)
-    remaining_seconds = Column(Float, nullable=True)
+    # Double, not Float: these hold Unix timestamps (~10 significant
+    # digits). SQLAlchemy's generic Float compiles to MySQL's 32-bit
+    # FLOAT (~7 significant digits), which silently rounds a timestamp to
+    # the nearest ~100+ seconds -- invisible on SQLite (tests), very much
+    # not invisible against real MySQL (deadlines landing in the past).
+    deadline = Column(Double, nullable=True)
+    remaining_seconds = Column(Double, nullable=True)
     round_number = Column(Integer, nullable=False, default=1)
     lesson = Column(JSON, nullable=True)
     revision = Column(Integer, nullable=False, default=1)
@@ -33,7 +38,7 @@ class RecallAttempt(Base):
     submission_id = Column(String(36), nullable=False)  # UUID, see RecallInput
     text = Column(Text, nullable=False)  # up to RecallInput's 12,000 chars
     assessment = Column(JSON, nullable=False)
-    created_at = Column(Float, default=time.time, nullable=False)
+    created_at = Column(Double, default=time.time, nullable=False)  # see the Double note above
     __table_args__ = (UniqueConstraint("session_id", "round_number"), UniqueConstraint("session_id", "submission_id"))
 
 class ChatMessage(Base):
@@ -51,6 +56,9 @@ class WellbeingReading(Base):
     id = Column(Integer, primary_key=True)
     session_id = Column(Integer, ForeignKey("studysession.id"), nullable=False, index=True)
     round_number = Column(Integer, nullable=False)
+    # These four are 0-100ish range values, not timestamps -- plain Float
+    # (32-bit on MySQL) has plenty of precision for them. created_at is a
+    # timestamp, so it needs Double (see the note on StudySession above).
     avg_stress = Column(Float, nullable=True)
     pct_high_stress = Column(Float, nullable=True)
     longest_high_stress_run_sec = Column(Float, nullable=False, default=0)
@@ -58,5 +66,5 @@ class WellbeingReading(Base):
     drowsiness_alert_count = Column(Integer, nullable=False, default=0)
     extend_break = Column(Boolean, nullable=False, default=False)
     extra_break_minutes = Column(Integer, nullable=False, default=0)
-    created_at = Column(Float, default=time.time, nullable=False)
+    created_at = Column(Double, default=time.time, nullable=False)
     __table_args__ = (UniqueConstraint("session_id", "round_number"),)
