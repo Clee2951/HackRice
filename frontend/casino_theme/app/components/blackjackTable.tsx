@@ -26,20 +26,10 @@ declare global {
   }
 }
 
-/**
- *
- * Circle geometry, expressed in table-box percentages:
- *   center = (50%, 0%)  (midpoint of the flat top edge)
- *   radius = 100% of the box height
- * A seat at angle θ (measured downward from the right of center) sits at:
- *   x = 50 + R·cosθ ,  y = 0 + R·sinθ
- */
 const SEAT_COUNT = 6
-const ARC_START = 160 // degrees from the left edge
-const ARC_END = 20 // degrees toward the right edge
-const SEAT_RADIUS = 0.80 // fraction of the felt radius the cards sit at (0-1)
-// The felt box is 2:1, so equal x/y percentages are not equal distances.
-// Scale x by 50% of the width and y by 100% of the height to trace the ellipse.
+const ARC_START = 160 
+const ARC_END = 20 
+const SEAT_RADIUS = 0.80 
 const RX = 50
 const RY = 100
 
@@ -51,7 +41,6 @@ function buildSeats(seatCount: number) {
     const rad = (angle * Math.PI) / 180
     const x = 50 + SEAT_RADIUS * RX * Math.cos(rad)
     const y = SEAT_RADIUS * RY * Math.sin(rad)
-    // Rotate the card so its top tilts toward the table center at (50, 0).
     const rotation = angle - 90
     seats.push({ id: i + 1, x, y, rotation, label: `Seat ${i + 1}` })
   }
@@ -84,37 +73,51 @@ export function BlackjackTable() {
     if (!window.kioskAPI || !exitPrompt) return
     const result = await window.kioskAPI.requestExit(exitPrompt.pin)
     if (!result.success) {
-      // A successful call quits the app from the main process -- nothing
-      // left to update here. Only a wrong PIN leaves the prompt open.
       setExitPrompt({ ...exitPrompt, error: result.message ?? "Incorrect PIN." })
     }
   }
 
-  async function addFile() {
-    if (!window.kioskAPI) {
-      console.error("File selection is available when the app is running in Electron.")
-      return
+  // Handles uploading a file directly to Vultr Object Storage
+  async function handleVultrUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const res = await fetch(
+        `/api/upload-url?filename=${encodeURIComponent(file.name)}&contentType=${encodeURIComponent(file.type)}`
+      );
+      const data = await res.json();
+
+      if (!data.uploadUrl) {
+        throw new Error("Failed to generate Vultr upload URL");
+      }
+
+      const uploadRes = await fetch(data.uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": file.type },
+        body: file,
+      });
+
+      if (!uploadRes.ok) {
+        throw new Error("Upload to Vultr failed");
+      }
+
+      setDocuments((current) => [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          name: file.name,
+          path: `uploads/${file.name}`,
+        },
+      ]);
+    } catch (err) {
+      console.error("Vultr upload error:", err);
+      alert("Error uploading file to Vultr.");
     }
-
-    const picked = await window.kioskAPI.pickFile()
-    if (picked.canceled || !picked.filePath || !picked.fileName) return
-
-    const filePath = picked.filePath
-    const fileName = picked.fileName
-
-    setDocuments((current) => [
-      ...current,
-      {
-        id: crypto.randomUUID(),
-        name: fileName,
-        path: filePath,
-      },
-    ])
   }
 
   return (
     <div className="relative flex min-h-svh w-full items-start justify-center overflow-hidden bg-radial from-green-900 from-50% to-neutral-900 to-100% bg-felt-dark p-4">
-      {/* Kiosk exit -- fixed corner, always reachable regardless of table layout. */}
       <button
         type="button"
         onClick={openExitPrompt}
@@ -163,16 +166,13 @@ export function BlackjackTable() {
         </div>
       )}
 
-      {/* Table box: width drives the semi-circle; height is half of width. */}
       <div className="relative aspect-[2/1] w-full max-w-[1100px] shrink-0" style={{ minWidth: `${tableMinWidth}px` }}>
-        {/* Wooden rail (slightly larger semi-circle behind the felt) */}
         <div
           className="absolute inset-0 rounded-b-full bg-green-900 bg-gradient-to-b border-b-20 border-x-20 border-amber-900 from-rail-highlight to-rail shadow-[0_30px_60px_-20px_rgba(0,0,0,0.8)]"
           style={{ transform: "scale(1.04)", transformOrigin: "top center" }}
           aria-hidden="true"
         />
 
-        {/* Felt surface */}
         <div
           className="absolute inset-0 overflow-hidden rounded-b-full"
           style={{
@@ -180,30 +180,31 @@ export function BlackjackTable() {
               "radial-gradient(120% 150% at 50% 0%, var(--felt) 55%, var(--felt-dark) 100%)",
           }}
         >
-          {/* Inner betting-line arc */}
           <div
             className="absolute left-1/2 top-0 -translate-x-1/2 rounded-b-full border-2 border-felt-line"
             style={{ width: "78%", height: "78%" }}
             aria-hidden="true"
           />
-          {/* Payout arc */}
           <div
             className="absolute left-1/2 top-0 -translate-x-1/2 rounded-b-full border border-felt-line/60"
             style={{ width: "60%", height: "60%" }}
             aria-hidden="true"
           />
 
-          {/* Dealer chip tray along the flat top edge */}
-          <button
+          {/* Dealer chip tray acting as the Vultr Upload Trigger */}
+          <label
             className="absolute left-1/2 top-[6%] -translate-x-1/2 rounded-full border border-gold/40 bg-black/15
-            flex items-center justify-center font-serif hover:scale-105 active:scale-95 duration-300 ease-in-out cursor-pointer font-extrabold"
+            flex items-center justify-center font-serif hover:scale-105 active:scale-95 duration-300 ease-in-out cursor-pointer font-extrabold text-gold"
             style={{ width: "34%", height: "12%" }}
-            type="button"
-            onClick={addFile}>
-                ADD FILE
-            </button>
+          >
+            <span>UPLOAD TO VULTR</span>
+            <input 
+              type="file" 
+              className="hidden" 
+              onChange={handleVultrUpload} 
+            />
+          </label>
 
-          {/* Table legend text */}
           <p
             className="absolute left-1/2 top-[30%] -translate-x-1/2 text-balance text-center font-serif text-gold"
             style={{ fontSize: "clamp(14px, 2.2vw, 30px)" }}
@@ -215,7 +216,6 @@ export function BlackjackTable() {
           </p>
         </div>
 
-        {/* Card seats along the arc perimeter */}
         {seats.map((seat, index) => {
           const document = documents[index]
 

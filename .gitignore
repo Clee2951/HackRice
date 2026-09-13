@@ -10,6 +10,10 @@ backend/.env
 # Node
 node_modules/
 npm-debug.log*
+# Next.js build cache -- casino_theme/.gitignore already covers its own
+# .next/, but a workspace-root misdetection (duplicate lockfiles under
+# frontend/) sometimes puts a stray one directly under frontend/ instead.
+.next/
 
 # Python
 __pycache__/

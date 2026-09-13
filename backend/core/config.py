@@ -17,5 +17,12 @@ class Settings(BaseSettings):
     MAX_DOCUMENT_CHARS: int = 60000
     MAX_PDF_PAGES: int = 50
     CORS_ORIGINS: list[str] = ["http://localhost:5500", "http://127.0.0.1:5500"]
+    # Vultr Object Storage (S3-compatible). Empty by default so the app
+    # (and tests) still start fine without them -- services/storage.py
+    # only errors when the upload feature is actually used, not at import.
+    VULTR_ACCESS_KEY: str = ""
+    VULTR_SECRET_KEY: str = ""
+    VULTR_STORAGE_ENDPOINT: str = ""
+    VULTR_STORAGE_BUCKET: str = ""
 
 settings = Settings()

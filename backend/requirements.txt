@@ -13,3 +13,5 @@ python-docx>=1.0.0
 # libmysqlclient needed, unlike mysqlclient -- simplest option for a
 # hackathon dev machine).
 PyMySQL>=1.1,<2
+# Vultr Object Storage is S3-compatible; boto3 talks to it via endpoint_url.
+boto3>=1.34,<2
