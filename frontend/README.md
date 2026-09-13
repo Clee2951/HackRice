@@ -2,9 +2,11 @@
 
 An Electron shell around the `casino_theme/` Next.js UI, with:
 - Kiosk/lockdown mode **on by default** (full-screen, taskbar hidden on
-  Windows, focus-stealing deterrent — see the limitation note below)
+  Windows — see the limitation note below)
 - A visible **EXIT** button in the UI (top-right) with an optional PIN,
   wired through `preload.js`'s `window.kioskAPI`
+- A renderer-independent emergency exit shortcut (see below) — mandatory
+  safety valve for anything that blocks window close
 - Drag-and-drop / "Choose File" upload, proxied to your FastAPI backend
   (which forwards to Vultr Object Storage — the secret key never lives
   in this app)
@@ -21,14 +23,30 @@ installers/entitlements to do that; a BrowserWindow API doesn't have
 access to those mechanisms.
 
 What this app actually does when in kiosk mode:
-- Steals focus back immediately if you switch away (`blur` → `focus()`)
-- Stays visually always-on-top at the highest level Electron exposes
 - Removes the macOS default app menu (and the Cmd+Q/Cmd+H/Cmd+M shortcuts
   bound to it)
-- Blocks the window from closing except through the Exit button/PIN flow
+- Blocks the window from closing except through the Exit button/PIN flow,
+  **or** the emergency shortcut below
 
-Treat all of that as "makes leaving annoying," not "makes leaving
-impossible." State this plainly in any demo/report — don't oversell it.
+Treat all of that as "makes leaving mildly inconvenient," not "makes
+leaving impossible." State this plainly in any demo/report — don't
+oversell it.
+
+### 🚨 Emergency exit: `Cmd/Ctrl+Alt+Shift+X`
+
+**A real user got hard-locked out twice** by an earlier version of this
+app that also stole focus back on every `blur` and stayed always-on-top —
+it fought every legitimate way to regain control (Force Quit, Activity
+Monitor, switching to a terminal), and there was no way out short of
+powering the machine off. That behavior has been removed entirely.
+
+This shortcut always works — independent of the renderer, the PIN, or
+whether the web UI even loaded — and quits immediately, bypassing
+`EXIT_PIN`. If you're ever stuck, use it before resorting to anything more
+drastic. If it doesn't respond (another app may already hold that
+combo — check the terminal log for a warning about this), the Exit
+button/PIN flow is the fallback; only power off as an absolute last
+resort.
 
 ## Setup
 

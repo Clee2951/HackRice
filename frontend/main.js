@@ -3,7 +3,7 @@
 // hide/restore (synchronously, so it can't be skipped on exit), and proxies
 // file uploads to the FastAPI backend (which forwards them to Vultr).
 
-const { app, BrowserWindow, ipcMain, dialog, Menu } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, Menu, globalShortcut } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { execFileSync } = require("child_process");
@@ -26,14 +26,31 @@ const TASKBAR_SCRIPT = path.join(__dirname, "taskbar.ps1");
 // Control are OS-reserved shortcuts that Apple deliberately prevents
 // ordinary (non-entitled) apps from intercepting -- that's intentional OS
 // security design, not a bug here. Real lockdown-browser products need
-// special system-level installers/entitlements to do this. What follows are
-// the practical mitigations actually available from a normal Electron app:
-// stealing focus back immediately (blur handler), staying visually on top,
-// and removing the few shortcuts/menu items Electron itself adds (Cmd+Q,
-// Cmd+H, Cmd+M) that we CAN control. Treat this as a deterrent, not a
+// special system-level installers/entitlements to do this. What follows is
+// deliberately modest: removing the few shortcuts/menu items Electron
+// itself adds (Cmd+Q/H/M) and blocking the window from closing except
+// through the Exit button/PIN flow. Treat this as a deterrent, not a
 // guarantee -- document that clearly wherever this app's capabilities are
 // described (README, demo narrative), same honesty standard as the
 // stress-detection heuristics in presage/.
+//
+// SAFETY-CRITICAL, learned the hard way: an earlier version of this file
+// also stole focus back on every 'blur' event and set always-on-top at the
+// highest level. That combination forced a real user into TWO hard reboots
+// -- it actively fought every legitimate way to regain control of their own
+// machine (Force Quit, Activity Monitor, switching to a terminal to kill
+// the process), and if the Exit button's IPC call ever glitched for any
+// reason, there was no way out at all short of powering off. Removed
+// entirely. Never build a "lockdown" feature that can out-fight a user's
+// own OS-level escape routes -- a renderer-independent safety valve
+// (EMERGENCY_EXIT_SHORTCUT below) is mandatory, not optional, for anything
+// that blocks window close.
+const EMERGENCY_EXIT_SHORTCUT = "CommandOrControl+Alt+Shift+X";
+// Deliberately bypasses EXIT_PIN. This is the last-resort escape hatch --
+// it must always work, independent of the renderer/React UI, the PIN, or
+// anything else that could be broken/misconfigured. Registered at the
+// Electron main-process level (globalShortcut), so it works even if the
+// whole web UI fails to load or has a JS error.
 
 let mainWindow;
 let taskbarCurrentlyHidden = false;
@@ -97,17 +114,6 @@ function createWindow() {
     // the taskbar reappearing after the native "Open File" dialog closes.
     mainWindow.on("focus", () => setTaskbar("hide"));
 
-    // Best-effort deterrent, not a real block (see the limitation note at
-    // the top of this file): steal focus back immediately if the user
-    // manages to switch away, and keep the window above everything else at
-    // the highest level Electron exposes.
-    mainWindow.on("blur", () => {
-      if (!mainWindow) return;
-      mainWindow.show();
-      mainWindow.focus();
-    });
-    mainWindow.setAlwaysOnTop(true, "screen-saver");
-
     // Block the window from closing except through the exit-button/PIN
     // flow -- otherwise Cmd+W/Alt+F4 or a stray close request would bypass
     // it entirely.
@@ -119,6 +125,18 @@ function createWindow() {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+}
+
+// ---------------------------------------------------------------------------
+// Emergency exit -- see the SAFETY-CRITICAL note near EMERGENCY_EXIT_SHORTCUT
+// above. Deliberately bypasses EXIT_PIN and doesn't depend on mainWindow or
+// the renderer being in any particular (or even working) state.
+// ---------------------------------------------------------------------------
+function emergencyExit() {
+  console.log("Emergency exit shortcut triggered.");
+  allowClose = true;
+  restoreTaskbarIfNeeded();
+  app.quit();
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +152,19 @@ app.whenReady().then(() => {
   // shortcuts too. Only the ones we can actually control; see the
   // limitation note at the top of this file for Cmd+Tab/Mission Control.
   if (IS_KIOSK) Menu.setApplicationMenu(null);
+
+  if (IS_KIOSK) {
+    const registered = globalShortcut.register(EMERGENCY_EXIT_SHORTCUT, emergencyExit);
+    if (!registered) {
+      // Don't fail startup over this, but it means the safety valve isn't
+      // active (likely another app already holds this combo) -- surface it
+      // loudly since it matters.
+      console.error(
+        `WARNING: could not register emergency exit shortcut (${EMERGENCY_EXIT_SHORTCUT}) -- ` +
+          "it may be held by another application. The Exit button/PIN flow is the only way out.",
+      );
+    }
+  }
 
   createWindow();
 
@@ -153,6 +184,7 @@ app.on("before-quit", () => {
 
 app.on("will-quit", () => {
   restoreTaskbarIfNeeded();
+  globalShortcut.unregisterAll();
 });
 
 process.on("uncaughtException", (err) => {
