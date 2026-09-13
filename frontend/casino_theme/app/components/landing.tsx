@@ -11,7 +11,7 @@ export function Landing() {
         <img src="/lasVegas.png" alt="Las Vegas" className="w-full h-auto block object-bottom"/>
       </div>
 
-      <div className="relative flex flex-col items-center justify-center h-[75vh] font-serif font-extrabold text-8xl text-amber-400">
+      <div className="relative flex flex-col items-center justify-center h-[50vh] font-serif font-extrabold text-8xl text-amber-400">
         <div>RANDOM</div>
         <div>RANDOM</div>
 </div>
