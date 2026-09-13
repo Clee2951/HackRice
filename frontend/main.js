@@ -204,9 +204,9 @@ function setLockdown(on) {
   lockedDown = on;
   mainWindow.setKiosk(on);
   mainWindow.setFullScreen(on);
-  // The macOS app menu carries Cmd+Q/H/M; removing it removes those. Put it
-  // back on release so the app behaves normally between rounds.
-  Menu.setApplicationMenu(null);
+  // The app menu is already removed at startup (see app.whenReady) and
+  // stays removed -- rebuilding Electron's default template just to put
+  // Cmd+Q back between rounds isn't worth the surface area.
   setTaskbar(on ? "hide" : "show");
   if (on) mainWindow.focus();
   console.log(`Lockdown ${on ? "engaged" : "released"}.`);
