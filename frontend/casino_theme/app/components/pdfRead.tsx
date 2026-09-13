@@ -120,7 +120,7 @@ export function PdfRead({ document = DEFAULT_DOCUMENT }: { document?: PdfDocumen
                 <h2 className="mt-1 text-xl font-semibold">Mood: detecting</h2>
                 <p className="mt-1 text-sm text-white/50">{cameraStatus}</p>
               </div>
-              <video ref={videoRef} autoPlay muted playsInline className="h-16 w-16 rounded-full object-cover opacity-80" />
+              <video ref={videoRef} autoPlay muted playsInline className="hidden" aria-hidden="true" />
             </div>
           </section>
 
