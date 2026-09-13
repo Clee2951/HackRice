@@ -23,8 +23,13 @@ def login_access_token(
         raise HTTPException(status_code=400, detail="Incorrect email or password")
     elif not user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
+    token = create_access_token(user.uid)
+    # Schema compliance / debugging aid only -- see the comment on
+    # User.auth_token in models/user.py. Not consulted during auth.
+    user.auth_token = token
+    db.commit()
     return {
-        "access_token": create_access_token(user.id),
+        "access_token": token,
         "token_type": "bearer",
     }
 

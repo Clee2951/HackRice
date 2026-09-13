@@ -61,7 +61,11 @@ def setup():
 
 
 def account(client, email='student@example.com'):
-    result = client.post('/api/v1/auth/signup', json={'email': email, 'password': 'password123'})
+    # OAuth2PasswordRequestForm's "username" field carries the email (see
+    # auth.py) -- unrelated to the users.username column, which just needs
+    # to be present and unique, so derive it from the email's local part.
+    username = email.split('@')[0]
+    result = client.post('/api/v1/auth/signup', json={'email': email, 'username': username, 'password': 'password123'})
     assert result.status_code == 200, result.text
     result = client.post('/api/v1/auth/login/access-token', data={'username': email, 'password': 'password123'})
     assert result.status_code == 200, result.text
@@ -254,7 +258,7 @@ def test_text_pdf_extraction(setup):
     response = client.post('/api/v1/documents', headers=h, files={'file': ('ohms.pdf', data.getvalue(), 'application/pdf')})
     assert response.status_code == 201, response.text
     did = response.json()['id']
-    assert 'ohmic' in client.get(f'/api/v1/documents/{did}/content', headers=h).json()['pages'][0]['text']
+    assert 'ohmic' in client.get(f'/api/v1/documents/{did}/content', headers=h).json()['objects'][0]['content']
     saved = client.get(f'/api/v1/documents/{did}/file', headers=h)
     assert saved.content == data.getvalue()
 

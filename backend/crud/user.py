@@ -12,8 +12,9 @@ class CRUDUser(CRUDBase[User, UserCreate, UserUpdate]):
 
     def create(self, db: Session, *, obj_in: UserCreate) -> User:
         db_obj = User(
+            username=obj_in.username,
             email=obj_in.email,
-            hashed_password=get_password_hash(obj_in.password),
+            password_hash=get_password_hash(obj_in.password),
             is_active=True,
         )
         db.add(db_obj)
@@ -25,7 +26,7 @@ class CRUDUser(CRUDBase[User, UserCreate, UserUpdate]):
         user = self.get_by_email(db, email=email)
         if not user:
             return None
-        if not verify_password(password, user.hashed_password):
+        if not verify_password(password, user.password_hash):
             return None
         return user
 

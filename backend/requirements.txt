@@ -9,3 +9,7 @@ email-validator>=2.2,<3
 google-genai>=1.30,<2
 pypdf>=5,<7
 python-docx>=1.0.0
+# Pure-Python MySQL driver for the Vultr Managed Database (no system
+# libmysqlclient needed, unlike mysqlclient -- simplest option for a
+# hackathon dev machine).
+PyMySQL>=1.1,<2
