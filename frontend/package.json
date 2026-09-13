@@ -1,7 +1,7 @@
 {
   "name": "hackrice-kiosk",
   "version": "1.0.0",
-  "description": "Study Loop: lockdown study kiosk with AI-driven pomodoro and active recall.",
+  "description": "Facedown: lockdown study app with AI-graded active recall.",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -20,8 +20,8 @@
     "dotenv": "^16.4.5"
   },
   "build": {
-    "appId": "com.hackrice.studyloop",
-    "productName": "Study Loop",
+    "appId": "com.hackrice.facedown",
+    "productName": "Facedown",
     "directories": {
       "output": "dist"
     },
@@ -64,14 +64,14 @@
           ]
         }
       ],
-      "artifactName": "StudyLoop-Setup-${version}.${ext}"
+      "artifactName": "Facedown-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "Study Loop"
+      "shortcutName": "Facedown"
     },
     "mac": {
       "target": [
@@ -79,7 +79,7 @@
       ],
       "category": "public.app-category.education",
       "extendInfo": {
-        "NSCameraUsageDescription": "Study Loop watches for stress and drowsiness during study rounds."
+        "NSCameraUsageDescription": "Facedown watches for stress and drowsiness during study rounds."
       }
     },
     "linux": {

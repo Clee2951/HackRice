@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# One-time setup for running Study Loop on your own machine.
+# One-time setup for running Facedown on your own machine.
 #
 # Installs everything, generates the signing secret, and creates
 # backend/.env for you. The only thing you fill in by hand afterwards is a

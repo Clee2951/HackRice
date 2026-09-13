@@ -443,7 +443,7 @@ app.whenReady().then(() => {
       // emergency shortcut has nothing to close -- so say it plainly in a
       // dialog rather than exiting silently on a blank screen.
       console.error(err);
-      dialog.showErrorBox("Study Loop could not start", err.message);
+      dialog.showErrorBox("Facedown could not start", err.message);
       app.quit();
     });
 });
