@@ -28,6 +28,21 @@ What this app actually does when in kiosk mode:
 - Blocks the window from closing except through the Exit button/PIN flow,
   **or** the emergency shortcut below
 
+### When lockdown engages
+
+Not at launch. The renderer calls `kiosk:setLockdown` as the session moves
+through its phases: locked during **study / review / recall**, released for
+**feedback / break / completed**, and released while paused.
+
+Locking at launch meant a first-time user's first impression — before
+login — was an inescapable full-screen window, which reads as a broken app
+rather than a focus tool. Breaks are also the one time the app should *not*
+hold you there.
+
+`--kiosk` forces lockdown from launch; `--no-kiosk` disables it entirely.
+The emergency shortcut and the injected exit button are registered at
+startup regardless, so the way out already exists whenever lockdown begins.
+
 Treat all of that as "makes leaving mildly inconvenient," not "makes
 leaving impossible." State this plainly in any demo/report — don't
 oversell it.
@@ -84,11 +99,57 @@ and confirm. If you set `EXIT_PIN` in `.env`, it'll ask for that PIN first.
 ## Building a standalone installer
 
 ```bash
-npm run build
+npm run build        # current platform
+npm run build:win    # Windows NSIS installer (must run on Windows)
 ```
 
-Produces a `.exe` (Windows/NSIS), `.dmg` (macOS), or `.AppImage` (Linux)
-in the `dist/` folder, depending on the OS you build on.
+Output lands in `dist/`. Both scripts export the UI first — packaging a
+stale or missing `casino_theme/out` is the easiest way to ship an
+installer that opens on an error page.
+
+**Prefer CI.** `.github/workflows/build-desktop.yml` builds the `.exe` on a
+`windows-latest` runner and uploads it as an artifact, which avoids both
+the "do you own a Windows machine" problem and the Wine cross-build
+problem. See the root README.
+
+### How the packaged app is laid out
+
+```
+resources/
+├── app.asar            main.js, preload.js, taskbar.ps1
+├── ui/                 the exported Next.js build, served over loopback
+└── presage/            capture scripts + node_modules (SmartSpectra, koffi)
+```
+
+Only the shell goes inside the asar. The UI export and the capture process
+ship as `extraResources`, because koffi loads the SmartSpectra native
+runtime through the OS loader and that cannot read out of an asar archive.
+
+Two things about `extraResources` that cost real debugging time:
+
+- **`node_modules` is excluded by default.** A `"**/*"` filter on a
+  directory copies everything *except* `node_modules`, which produces an
+  installer that looks complete and whose camera dies at launch with
+  `Cannot find package '@smartspectra/node-sdk'`. It needs its own entry.
+- **All four SmartSpectra platform runtimes install as hard dependencies**
+  (~356 MB) and only one is ever loaded. The CI build prunes the other
+  three before packaging, then asserts the target's DLL is still there —
+  a silent prune bug would otherwise ship a camera-less installer that
+  passes every other check.
+
+### Per-machine settings
+
+The installed app reads `<userData>/config.json` (on Windows,
+`%APPDATA%/Study Loop/config.json`):
+
+```json
+{ "backendUrl": "https://your-host", "smartspectraApiKey": "..." }
+```
+
+`backendUrl` overrides the build-time default, so one installer can be
+repointed without a rebuild. The SmartSpectra key is deliberately not
+baked into the installer — that would hand the same secret to everyone who
+installs it, which the SDK's own docs warn against.
 
 ## How the taskbar fix works
 
@@ -158,23 +219,54 @@ never loads at all.
 
 ## Connecting to your backend
 
-This app expects a FastAPI endpoint at:
+The renderer talks to the backend directly, using the bearer token it got
+at login. The main process does **not** upload anything itself: it has no
+token, and adding an unauthenticated upload route so it could would be a
+hole in the API. `kiosk:pickFile` therefore hands the renderer the file's
+*bytes* along with its name, and the renderer POSTs them to
+`/api/v1/documents` — the same endpoint the browser build uses — where
+Gemini extracts the learning objectives.
 
-```
-POST {BACKEND_URL}/api/v1/upload/
-```
+(An earlier version posted to `POST {BACKEND_URL}/api/v1/upload/` from the
+main process. That endpoint does not exist in `backend/` — it belonged to
+`backend-GI/` — so that path never worked.)
 
-accepting a `multipart/form-data` body with a `file` field, which your
-backend then forwards to Vultr Object Storage (S3-compatible) using
-`boto3`. Your Vultr access/secret keys should live only in
-`backend/.env`, never in this Electron app.
+Vultr access/secret keys live only in `backend/.env`, never in this
+Electron app. See `docs/vultr-object-storage.md`.
+
+## Presage camera capture
+
+During each study/review round the main process spawns
+`presage/session.mjs` as a child process, passing it the active
+`STUDY_SESSION_ID` and the logged-in `AUTH_TOKEN`. That script owns the
+camera and posts its own stress/drowsiness summary to
+`POST /api/v1/sessions/{id}/wellbeing` when the round ends, which is what
+lets a stressful round extend the *next* break.
+
+- Running from source, the API key comes from the **repo-root** `.env`
+  (`SMARTSPECTRA_API_KEY`), the same file `presage/`'s own npm scripts
+  read — not from `frontend/.env`. An installed app reads it from
+  `<userData>/config.json` instead (see above).
+- Run `npm install` inside `presage/` first, or the spawn fails on a
+  missing `@smartspectra/node-sdk`.
+- Capture runs under **Electron's own binary** in `ELECTRON_RUN_AS_NODE`
+  mode, so an installed app does not require the user to have Node.js.
+  This works because the SDK is pure FFI over koffi — N-API, and therefore
+  ABI-stable across Node and Electron. Its README puts it plainly: "no
+  native addon, no `binding.gyp`, no `electron-rebuild`, no `node-gyp`".
+  Set `PRESAGE_NODE` to a real node binary to override.
+- Stopping a round sends `SIGTERM`, which `session.mjs` traps so it can
+  release the camera and post its summary. Killing it outright would
+  throw away the measurement the round existed to take.
+- With no key set, the UI's wellbeing panel says the camera is
+  unavailable and everything else works normally.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `main.js` | Main process: window creation, injected exit-button overlay, emergency shortcut, taskbar control, IPC handlers, upload logic |
+| `main.js` | Main process: window creation, injected exit-button overlay, emergency shortcut, taskbar control, IPC handlers, Presage capture lifecycle |
 | `preload.js` | Secure bridge exposing `window.kioskAPI` to the renderer |
 | `taskbar.ps1` | PowerShell helper to hide/show the Windows taskbar |
 | `casino_theme/` | The actual UI — a separate Next.js app, loaded via `NEXT_APP_URL` |
-| `.env.example` | Template for `BACKEND_URL` / `EXIT_PIN` / `NEXT_APP_URL` |
+| `.env.example` | Template for `BACKEND_URL` / `NEXT_APP_URL` / `EXIT_PIN` / `PRESAGE_NODE` |

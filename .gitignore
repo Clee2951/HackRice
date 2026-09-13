@@ -3,10 +3,23 @@
 .env.*
 !.env.example
 backend/.env
+# Vultr Managed Database CA cert (see docs/vultr-mysql-setup.md) -- not
+# secret by itself, but keep certs/credentials out of git as a habit.
+*.pem
 
 # Node
 node_modules/
 npm-debug.log*
+
+# Logs written by scripts/setup.sh and scripts/start.sh.
+.backend.log
+.build.log
+
+# Build output: the packaged desktop app and the exported UI it serves.
+# Hundreds of MB of Electron runtime and the SmartSpectra native closure --
+# rebuilt by `npm run build`, never committed.
+frontend/dist/
+frontend/casino_theme/out/
 
 # Python
 __pycache__/
@@ -15,8 +28,17 @@ __pycache__/
 .venv-local/
 venv/
 
+# Local dev databases. These are per-developer scratch state -- committing
+# them means every teammate's study.db conflicts with every other one's.
+# The schema is recreated on startup by Base.metadata.create_all().
+*.db
+
 # OS
 .DS_Store
 
 # Claude Code local settings (personal, machine-specific — not shared)
 .claude/settings.local.json
+
+# Personal notes (resume prep, session-to-session progress tracking) — not team-facing
+RESUME_SUMMARY.md
+todo.md

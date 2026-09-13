@@ -3,22 +3,112 @@
 // hide/restore (synchronously, so it can't be skipped on exit), and proxies
 // file uploads to the FastAPI backend (which forwards them to Vultr).
 
-const { app, BrowserWindow, ipcMain, dialog, Menu, globalShortcut } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, Menu, globalShortcut, session } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const { execFileSync } = require("child_process");
-const https = require("https");
-const http = require("http");
+const { execFileSync, spawn } = require("child_process");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
+// The SmartSpectra key lives in the REPO ROOT .env, not frontend/.env --
+// presage/package.json already reads it from there (`node --env-file=../.env`),
+// and duplicating a key into a second file is how the two copies drift.
+// Harmless no-op in a packaged app, where neither file exists.
+require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
-const BACKEND_URL = process.env.BACKEND_URL || "http://127.0.0.1:8000";
-const NEXT_APP_URL = process.env.NEXT_APP_URL || "http://localhost:3000";
+// In a packaged app everything ships under resources/ as extraResources;
+// in a source checkout it sits in the repo. One flag, used everywhere the
+// two layouts differ.
+const PACKAGED = app.isPackaged;
+const RESOURCES = PACKAGED ? process.resourcesPath : path.join(__dirname, "..");
+
 const EXIT_PIN = process.env.EXIT_PIN || "";
-// Kiosk/lockdown is the DEFAULT now, not opt-in -- this app's whole purpose
-// is lockdown, so plain `npm start` should actually attempt it. Pass
-// --no-kiosk for local development (resizable window, no focus-stealing,
-// easy to Cmd+Tab away from while iterating).
-const IS_KIOSK = !process.argv.includes("--no-kiosk");
+
+// The exported Next.js UI (casino_theme's `output: "export"` build). The
+// packaged app serves these files itself -- there is no `next dev` on an
+// end user's machine.
+const UI_DIR = PACKAGED
+  ? path.join(process.resourcesPath, "ui")
+  : path.join(__dirname, "casino_theme", "out");
+
+const PRESAGE_DIR = PACKAGED
+  ? path.join(process.resourcesPath, "presage")
+  : path.join(__dirname, "..", "presage");
+const PRESAGE_SCRIPT = path.join(PRESAGE_DIR, "session.mjs");
+
+// Which binary runs the capture script.
+//
+// Electron's own binary, in ELECTRON_RUN_AS_NODE mode -- NOT a system
+// `node`. An earlier version of this file required system Node on the
+// theory that the SmartSpectra SDK ships a node-gyp addon whose ABI
+// wouldn't match Electron's. That was wrong, and the SDK's README says so
+// outright: it is "pure-FFI ... no native addon, no binding.gyp, no
+// electron-rebuild, no node-gyp". The C++ runtime is loaded at runtime
+// through koffi, which is N-API and therefore ABI-stable across Node and
+// Electron.
+//
+// This matters for the installer: requiring system Node would mean anyone
+// who installs the .exe also has to install Node before the camera works.
+// Set PRESAGE_NODE to override with a real node binary if ever needed.
+const PRESAGE_NODE = process.env.PRESAGE_NODE || process.execPath;
+
+/** Where the backend lives, in precedence order.
+ *
+ * A single installer has to be able to point at a different deployment
+ * without being rebuilt, so this is resolved at runtime rather than baked
+ * into the UI bundle:
+ *
+ *   1. BACKEND_URL in the environment (or frontend/.env in a checkout).
+ *   2. backendUrl in <userData>/config.json -- the per-machine override,
+ *      editable after install without touching Program Files.
+ *   3. The default compiled in at build time.
+ *
+ * Anything unparseable is ignored rather than allowed to produce a window
+ * that silently talks to nothing. */
+function resolveBackendUrl() {
+  const candidates = [process.env.BACKEND_URL, readUserConfig().backendUrl, DEFAULT_BACKEND_URL];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      return new URL(candidate).origin;
+    } catch {
+      console.error(`Ignoring unparseable backend URL: ${candidate}`);
+    }
+  }
+  return "http://127.0.0.1:8000";
+}
+
+// Overridden at build time by electron-builder (see the "extraMetadata"
+// note in package.json) or simply edited before a build.
+const DEFAULT_BACKEND_URL = process.env.DEFAULT_BACKEND_URL || "http://127.0.0.1:8000";
+
+function userConfigPath() {
+  return path.join(app.getPath("userData"), "config.json");
+}
+
+function readUserConfig() {
+  try {
+    return JSON.parse(fs.readFileSync(userConfigPath(), "utf8"));
+  } catch {
+    // Missing or malformed is the normal case on a fresh install.
+    return {};
+  }
+}
+
+const BACKEND_URL = resolveBackendUrl();
+// Lockdown is driven by the STUDY PHASE, not by launch.
+//
+// It used to engage the moment the app opened, which meant a first-time
+// user's very first impression -- before they had even logged in -- was an
+// inescapable full-screen window. That reads as a broken app rather than a
+// focus tool, and the natural reaction is to force-quit and not reopen it.
+// The renderer now calls kiosk:setLockdown as the session moves through its
+// phases (see casino_theme's studyRoom.tsx): locked while actually working,
+// released for feedback and breaks, when stepping away is the point.
+//
+//   --no-kiosk   never lock down, whatever the phase (development)
+//   --kiosk      lock down immediately at launch (demos, exam settings)
+const LOCKDOWN_DISABLED = process.argv.includes("--no-kiosk");
+const LOCKDOWN_AT_LAUNCH = process.argv.includes("--kiosk");
+let lockedDown = false;
 const TASKBAR_SCRIPT = path.join(__dirname, "taskbar.ps1");
 
 // IMPORTANT, honest limitation: none of the hardening below achieves a true
@@ -90,45 +180,87 @@ function restoreTaskbarIfNeeded() {
 // ---------------------------------------------------------------------------
 // Window creation
 // ---------------------------------------------------------------------------
-function createWindow() {
+// The UI server lives in its own module so its routing can be tested
+// without launching Electron -- see uiServer.js.
+const { startUiServer } = require("./uiServer");
+
+let uiServer = null;
+
+/** Engage or release lockdown at runtime.
+ *
+ * Driven by the study phase rather than by launch, so the window is
+ * ordinary until there is actually something to focus on. Idempotent: the
+ * renderer calls this on every phase change and most calls are no-ops.
+ *
+ * Honest about what it achieves -- see the limitation note at the top of
+ * this file. Full-screen kiosk, hidden Windows taskbar, no app menu, and a
+ * blocked window close. It makes leaving inconvenient, not impossible.
+ */
+function setLockdown(on) {
+  if (LOCKDOWN_DISABLED) return { lockedDown: false, reason: "disabled by --no-kiosk" };
+  if (!mainWindow || mainWindow.isDestroyed()) return { lockedDown };
+  if (on === lockedDown) return { lockedDown };
+
+  lockedDown = on;
+  mainWindow.setKiosk(on);
+  mainWindow.setFullScreen(on);
+  // The app menu is already removed at startup (see app.whenReady) and
+  // stays removed -- rebuilding Electron's default template just to put
+  // Cmd+Q back between rounds isn't worth the surface area.
+  setTaskbar(on ? "hide" : "show");
+  if (on) mainWindow.focus();
+  console.log(`Lockdown ${on ? "engaged" : "released"}.`);
+  return { lockedDown };
+}
+
+function createWindow(startUrl) {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
-    fullscreen: IS_KIOSK,
-    kiosk: IS_KIOSK,
+    // Starts as an ordinary window. setLockdown() takes it full-screen when
+    // a study round begins.
+    fullscreen: false,
+    kiosk: false,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      // Handed to the preload synchronously, so lib/api.ts can read the
+      // backend URL before the first request rather than racing an async
+      // IPC round trip.
+      additionalArguments: [`--study-loop-backend=${BACKEND_URL}`],
     },
   });
 
-  mainWindow.loadURL(NEXT_APP_URL);
+  mainWindow.loadURL(startUrl);
 
-  if (IS_KIOSK) {
-    // Hide as soon as the window is ready.
-    mainWindow.once("ready-to-show", () => setTaskbar("hide"));
+  // Re-hide the taskbar whenever this window regains focus -- the fix for
+  // it reappearing after the native "Open File" dialog closes. A no-op
+  // unless lockdown is currently engaged.
+  mainWindow.on("focus", () => {
+    if (lockedDown) setTaskbar("hide");
+  });
 
-    // Re-hide every time this window regains focus -- this is the fix for
-    // the taskbar reappearing after the native "Open File" dialog closes.
-    mainWindow.on("focus", () => setTaskbar("hide"));
+  // Block the window from closing during lockdown, except through the
+  // exit-button/PIN flow -- otherwise Cmd+W/Alt+F4 or a stray close
+  // request would bypass it entirely. Outside lockdown the window closes
+  // like any other.
+  mainWindow.on("close", (event) => {
+    if (lockedDown && !allowClose) event.preventDefault();
+  });
 
-    // Block the window from closing except through the exit-button/PIN
-    // flow -- otherwise Cmd+W/Alt+F4 or a stray close request would bypass
-    // it entirely.
-    mainWindow.on("close", (event) => {
-      if (!allowClose) event.preventDefault();
-    });
+  // Guaranteed exit button: injected by the main process into whatever
+  // page ends up loaded, so it exists even if the UI fails to load or has
+  // a bug of its own. Always injected, not just in lockdown -- the whole
+  // point is that it does not depend on the renderer working correctly,
+  // and lockdown can now begin at any moment.
+  mainWindow.webContents.on("dom-ready", () => injectExitOverlay(mainWindow.webContents));
 
-    // Guaranteed exit button: injected by the main process into whatever
-    // page ends up loaded, so it exists even if the Next.js app fails to
-    // load (e.g. its dev server isn't running -- see the did-fail-load
-    // handler below) or has a bug of its own. Same "don't depend on the
-    // renderer working correctly" philosophy as the emergency shortcut.
-    mainWindow.webContents.on("dom-ready", () => injectExitOverlay(mainWindow.webContents));
+  if (LOCKDOWN_AT_LAUNCH) mainWindow.once("ready-to-show", () => setLockdown(true));
 
-    // If the Next.js app can't be reached at all, don't leave the user on
+  {
+    // If the UI can't be reached at all, don't leave the user on
     // Chromium's bare error page with nothing clickable -- show a minimal
     // local fallback (dom-ready still fires for this, so the exit overlay
     // above still gets injected onto it too).
@@ -142,7 +274,10 @@ function createWindow() {
             <div><h2>Could not load the app</h2>
             <p>${errorDescription} (code ${errorCode})</p>
             <p>Tried: ${validatedURL}</p>
-            <p>Make sure the Next.js dev server (casino_theme/) is running.</p></div>
+            <p>The interface files could not be loaded. If you are running from
+            source, build the UI first (<code>npm run build</code> in
+            frontend/casino_theme) or start <code>next dev</code> and set
+            NEXT_APP_URL.</p></div>
             </body></html>`),
       );
     });
@@ -256,9 +391,12 @@ app.whenReady().then(() => {
   // to it) even with no menu bar visible -- removing it removes those
   // shortcuts too. Only the ones we can actually control; see the
   // limitation note at the top of this file for Cmd+Tab/Mission Control.
-  if (IS_KIOSK) Menu.setApplicationMenu(null);
+  Menu.setApplicationMenu(null);
 
-  if (IS_KIOSK) {
+  {
+    // Registered unconditionally. Lockdown can now engage at any moment, so
+    // the escape hatch has to already exist when it does -- registering it
+    // alongside lockdown would leave a window where there is no way out.
     const registered = globalShortcut.register(EMERGENCY_EXIT_SHORTCUT, emergencyExit);
     if (!registered) {
       // Don't fail startup over this, but it means the safety valve isn't
@@ -271,11 +409,43 @@ app.whenReady().then(() => {
     }
   }
 
-  createWindow();
-
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  // Camera access for Presage. The capture process opens the device
+  // directly, but Electron still has to be willing to grant "media" or
+  // Windows/macOS will refuse at the OS layer. Scoped to the app's own
+  // loopback UI: a window that later loads remote content must not be able
+  // to turn the camera on by asking.
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const url = details?.requestingUrl || contents?.getURL() || "";
+    callback(permission === "media" && url.startsWith("http://127.0.0.1:"));
   });
+
+  // NEXT_APP_URL points the window at a running `next dev` instead of the
+  // exported build -- the fast path while iterating on the UI. Unset (the
+  // normal case, and always in a packaged app) it serves the export.
+  const devUrl = process.env.NEXT_APP_URL;
+  const ready = devUrl
+    ? Promise.resolve(devUrl)
+    : startUiServer(UI_DIR).then(({ url, server }) => {
+        uiServer = server;
+        return url;
+      });
+
+  ready
+    .then((startUrl) => {
+      console.log(`Loading UI from ${startUrl} (backend: ${BACKEND_URL})`);
+      createWindow(startUrl);
+      app.on("activate", () => {
+        if (BrowserWindow.getAllWindows().length === 0) createWindow(startUrl);
+      });
+    })
+    .catch((err) => {
+      // Without a window there is nothing to show a message in, and the
+      // emergency shortcut has nothing to close -- so say it plainly in a
+      // dialog rather than exiting silently on a blank screen.
+      console.error(err);
+      dialog.showErrorBox("Study Loop could not start", err.message);
+      app.quit();
+    });
 });
 
 app.on("window-all-closed", () => {
@@ -321,8 +491,17 @@ ipcMain.handle("kiosk:requestExit", async (_event, enteredPin) => {
   return { success: true };
 });
 
+ipcMain.handle("kiosk:setLockdown", async (_event, on) => setLockdown(Boolean(on)));
+
 ipcMain.handle("kiosk:getConfig", async () => {
-  return { requiresPin: Boolean(EXIT_PIN) };
+  return {
+    requiresPin: Boolean(EXIT_PIN),
+    lockdownAvailable: !LOCKDOWN_DISABLED,
+    backendUrl: BACKEND_URL,
+    // Lets the wellbeing panel say "no key configured" instead of showing
+    // a camera section that can never start.
+    hasPresageKey: Boolean(presageApiKey()),
+  };
 });
 
 // ---------------------------------------------------------------------------
@@ -342,77 +521,194 @@ ipcMain.handle("kiosk:pickFile", async () => {
 
   // Safety net: re-hide the taskbar immediately after the dialog closes,
   // in addition to the "focus" event listener above.
-  if (IS_KIOSK) setTaskbar("hide");
+  if (lockedDown) setTaskbar("hide");
 
   if (result.canceled || result.filePaths.length === 0) {
     return { canceled: true };
   }
 
   const filePath = result.filePaths[0];
-  return { canceled: false, filePath, fileName: path.basename(filePath) };
+  // Hand back the bytes, not just the path. The renderer uploads through
+  // the ordinary authenticated POST /api/v1/documents -- it holds the
+  // bearer token, the main process doesn't. Reading here keeps the
+  // renderer free of filesystem access, so contextIsolation stays intact.
+  try {
+    const data = fs.readFileSync(filePath);
+    return {
+      canceled: false,
+      filePath,
+      fileName: path.basename(filePath),
+      // Sliced to an exact ArrayBuffer: a Node Buffer is a view into a
+      // shared pool, and structured-cloning it whole would ship
+      // unrelated memory across the bridge.
+      data: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+    };
+  } catch (err) {
+    return { canceled: true, error: `Could not read ${path.basename(filePath)}: ${err.message}` };
+  }
 });
 
 // ---------------------------------------------------------------------------
-// IPC: upload a file to the backend, which forwards it to Vultr Object
-// Storage. Reading the file and making the HTTP request happens here in the
-// main process, so the renderer never needs raw filesystem or network
-// access (contextIsolation stays intact).
+// IPC: Presage / SmartSpectra camera capture
 // ---------------------------------------------------------------------------
-ipcMain.handle("kiosk:uploadFile", async (_event, filePath) => {
-  return new Promise((resolve) => {
-    try {
-      const fileName = path.basename(filePath);
-      const fileData = fs.readFileSync(filePath);
-      const boundary = `----KioskBoundary${Date.now()}`;
+// Runs presage/session.mjs as a child process for the duration of one
+// study/review round. That script owns the camera, the stress analysis
+// (presage/stress.mjs) and the drowsiness detection (presage/drowsiness.mjs),
+// and posts its own summary to POST /sessions/{id}/wellbeing when the
+// section ends -- which is what lets a stressful round extend the next
+// break. Nothing here re-implements any of that; this only starts it with
+// the right session, relays a few lines back to the UI, and stops it.
+//
+// A previous version of the app had the renderer ask the MAIN process to
+// upload files to /api/v1/upload/ -- an endpoint that does not exist in
+// this backend (it was backend-GI's) and that the main process could not
+// have authenticated against anyway, since the bearer token lives in the
+// renderer. That handler is gone; uploads go through the renderer's own
+// authenticated API client.
 
-      const payloadStart = Buffer.from(
-        `--${boundary}\r\n` +
-          `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
-          `Content-Type: application/octet-stream\r\n\r\n`
-      );
-      const payloadEnd = Buffer.from(`\r\n--${boundary}--\r\n`);
-      const body = Buffer.concat([payloadStart, fileData, payloadEnd]);
+let presageProcess = null;
 
-      const url = new URL(`${BACKEND_URL}/api/v1/upload/`);
-      const client = url.protocol === "https:" ? https : http;
+function sendPresageEvent(event) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("presage:event", event);
+  }
+}
 
-      const req = client.request(
-        {
-          hostname: url.hostname,
-          port: url.port || (url.protocol === "https:" ? 443 : 80),
-          path: url.pathname,
-          method: "POST",
-          headers: {
-            "Content-Type": `multipart/form-data; boundary=${boundary}`,
-            "Content-Length": body.length,
-          },
-        },
-        (res) => {
-          let data = "";
-          res.on("data", (chunk) => (data += chunk));
-          res.on("end", () => {
-            if (res.statusCode >= 200 && res.statusCode < 300) {
-              resolve({ success: true, status: res.statusCode, body: data });
-            } else {
-              resolve({
-                success: false,
-                status: res.statusCode,
-                message: `Server responded with ${res.statusCode}`,
-                body: data,
-              });
-            }
-          });
-        }
-      );
+/** Pull the few lines the UI cares about out of the capture script's stdout.
+ *
+ * Deliberately loose matching: session.mjs prints for a human, and a
+ * missed line costs a status update, not a broken session. The numbers
+ * that actually matter reach the backend directly from that script. */
+function interpretPresageLine(line) {
+  if (line.includes("WAKE UP")) {
+    sendPresageEvent({ type: "drowsiness", message: line.replace(/^!+\s*/, "").replace(/\s*!+$/, "") });
+    return;
+  }
+  if (line.startsWith("Section started")) {
+    sendPresageEvent({ type: "status", status: "running", message: "Watching for stress and drowsiness." });
+    return;
+  }
+  const extended = /Recommend \+(\d+) min break/.exec(line);
+  if (extended) {
+    sendPresageEvent({ type: "summary", extendBreak: true, extraBreakMinutes: Number(extended[1]) });
+    return;
+  }
+  if (line.includes("No sustained high stress")) {
+    sendPresageEvent({ type: "summary", extendBreak: false, extraBreakMinutes: 0 });
+  }
+}
 
-      req.on("error", (err) => {
-        resolve({ success: false, message: err.message });
-      });
+function stopPresage() {
+  if (!presageProcess) return;
+  const child = presageProcess;
+  presageProcess = null;
+  // SIGTERM, not SIGKILL: session.mjs traps it, stops the camera cleanly
+  // and POSTs the round's wellbeing summary on the way out. Killing it
+  // outright would throw away the measurement the round was for.
+  child.kill("SIGTERM");
+  // Backstop in case it wedges -- a stuck camera process would hold the
+  // device and block the next round from starting.
+  setTimeout(() => {
+    if (!child.killed) child.kill("SIGKILL");
+  }, 5000);
+}
 
-      req.write(body);
-      req.end();
-    } catch (err) {
-      resolve({ success: false, message: err.message });
+/** The SmartSpectra key, from the environment or the per-machine config.
+ *
+ * A packaged app has no repo-root .env to read, and baking the key into
+ * the installer would ship a shared secret to every person who installs
+ * it -- the SDK's own docs warn against exactly that. So the supported
+ * path for a distributed build is <userData>/config.json, which each
+ * user fills in with their own key. */
+function presageApiKey() {
+  return process.env.SMARTSPECTRA_API_KEY || readUserConfig().smartspectraApiKey || "";
+}
+
+ipcMain.handle("presage:start", async (_event, options = {}) => {
+  const { sessionId, token, sectionMinutes, breakSeconds } = options;
+  const apiKey = presageApiKey();
+  if (!apiKey) {
+    sendPresageEvent({ type: "status", status: "error", message: "No SmartSpectra API key configured." });
+    return {
+      started: false,
+      message: `No SmartSpectra API key. Set SMARTSPECTRA_API_KEY, or add {"smartspectraApiKey": "..."} to ${userConfigPath()}.`,
+    };
+  }
+  if (!fs.existsSync(PRESAGE_SCRIPT)) {
+    sendPresageEvent({ type: "status", status: "error", message: "Capture script not found." });
+    return { started: false, message: `Missing ${PRESAGE_SCRIPT}` };
+  }
+  if (presageProcess) stopPresage();
+
+  sendPresageEvent({ type: "status", status: "starting" });
+  const child = spawn(PRESAGE_NODE, [PRESAGE_SCRIPT], {
+    cwd: PRESAGE_DIR,
+    env: {
+      ...process.env,
+      // Run Electron's bundled binary as plain Node. The SmartSpectra SDK
+      // is pure FFI over koffi (N-API), so it loads under Electron's
+      // runtime unchanged -- which is what keeps "install Node.js first"
+      // off the list of things an end user has to do.
+      ELECTRON_RUN_AS_NODE: "1",
+      SMARTSPECTRA_API_KEY: apiKey,
+      // STUDY_SESSION_ID is always set here, so session.mjs attaches to
+      // the session the UI already created rather than creating a second
+      // one of its own.
+      STUDY_SESSION_ID: String(sessionId),
+      AUTH_TOKEN: token,
+      BACKEND_URL,
+      SECTION_MINUTES: String(sectionMinutes ?? 25),
+      BREAK_SECONDS: String(breakSeconds ?? 300),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  presageProcess = child;
+
+  let stdoutTail = "";
+  child.stdout.on("data", (chunk) => {
+    stdoutTail += chunk.toString();
+    const lines = stdoutTail.split("\n");
+    // Keep the last, possibly-incomplete line for the next chunk.
+    stdoutTail = lines.pop() ?? "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed) {
+        console.log(`[presage] ${trimmed}`);
+        interpretPresageLine(trimmed);
+      }
     }
   });
+
+  child.stderr.on("data", (chunk) => console.error(`[presage] ${chunk.toString().trim()}`));
+
+  child.on("error", (err) => {
+    presageProcess = null;
+    const message =
+      err.code === "ENOENT"
+        ? `Could not run the capture process at "${PRESAGE_NODE}".`
+        : err.message;
+    console.error(`[presage] ${message}`);
+    sendPresageEvent({ type: "status", status: "error", message });
+  });
+
+  child.on("exit", (code, signal) => {
+    if (presageProcess === child) presageProcess = null;
+    // A SIGTERM exit is this app stopping the round on purpose, not a fault.
+    if (signal === "SIGTERM" || code === 0) {
+      sendPresageEvent({ type: "status", status: "stopped" });
+    } else {
+      sendPresageEvent({ type: "status", status: "error", message: `Capture exited (code ${code}).` });
+    }
+  });
+
+  return { started: true };
 });
+
+ipcMain.handle("presage:stop", async () => {
+  stopPresage();
+  return { stopped: true };
+});
+
+// Never leave a camera process running after the window is gone.
+app.on("before-quit", stopPresage);
+app.on("window-all-closed", stopPresage);

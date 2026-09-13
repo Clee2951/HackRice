@@ -1,12 +1,14 @@
 {
   "name": "hackrice-kiosk",
   "version": "1.0.0",
-  "description": "Standalone Electron kiosk UI with drag-and-drop upload to Vultr (via backend proxy).",
+  "description": "Study Loop: lockdown study kiosk with AI-driven pomodoro and active recall.",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --no-kiosk",
-    "build": "electron-builder"
+    "build:ui": "npm --prefix casino_theme run build",
+    "build": "npm run build:ui && electron-builder",
+    "build:win": "npm run build:ui && electron-builder --win --publish never"
   },
   "author": "",
   "license": "MIT",
@@ -18,23 +20,73 @@
     "dotenv": "^16.4.5"
   },
   "build": {
-    "appId": "com.hackrice.kiosk",
-    "productName": "HackRice Kiosk",
+    "appId": "com.hackrice.studyloop",
+    "productName": "Study Loop",
+    "directories": {
+      "output": "dist"
+    },
     "files": [
       "main.js",
       "preload.js",
-      "taskbar.ps1",
-      "renderer/**/*",
-      ".env"
+      "taskbar.ps1"
+    ],
+    "extraResources": [
+      {
+        "from": "casino_theme/out",
+        "to": "ui"
+      },
+      {
+        "from": "../presage",
+        "to": "presage",
+        "filter": [
+          "*.mjs",
+          "package.json"
+        ]
+      },
+      {
+        "from": "../presage/node_modules",
+        "to": "presage/node_modules",
+        "filter": [
+          "**/*",
+          "!**/*.map",
+          "!**/*.md",
+          "!**/test/**",
+          "!**/.bin/**"
+        ]
+      }
     ],
     "win": {
-      "target": "nsis"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "StudyLoop-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Study Loop"
     },
     "mac": {
-      "target": "dmg"
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.education",
+      "extendInfo": {
+        "NSCameraUsageDescription": "Study Loop watches for stress and drowsiness during study rounds."
+      }
     },
     "linux": {
-      "target": "AppImage"
+      "target": [
+        "AppImage"
+      ],
+      "category": "Education"
     }
   }
 }
