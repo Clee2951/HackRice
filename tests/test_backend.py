@@ -440,3 +440,25 @@ def test_frontend_round_trip(setup):
     # 13. Mastery from round 1 is on the document, which is what DealModal
     # uses to pre-select the weakest objectives next time.
     assert client.get(f'/api/v1/documents/{did}', headers=h).json()['progress']['c1']['attempt_count'] == 1
+
+
+def test_cors_allows_the_desktop_app_s_loopback_origin(setup):
+    """The packaged Electron app serves its UI from an OS-assigned port.
+
+    Its Origin therefore can't be in a fixed allowlist, and without the
+    loopback regex every API call from the installed app fails preflight.
+    The regex must stay anchored: a host that merely starts with
+    127.0.0.1 is a different site and must not be allowed.
+    """
+    client, factory, ai = setup
+    preflight = {'Access-Control-Request-Method': 'POST'}
+
+    for origin in ('http://127.0.0.1:41237', 'http://localhost:54321', 'http://127.0.0.1:3000'):
+        response = client.options('/api/v1/auth/login/access-token',
+                                  headers={'Origin': origin, **preflight})
+        assert response.headers.get('access-control-allow-origin') == origin, origin
+
+    for origin in ('http://127.0.0.1.evil.com', 'https://evil.com', 'http://evil.com:3000'):
+        response = client.options('/api/v1/auth/login/access-token',
+                                  headers={'Origin': origin, **preflight})
+        assert 'access-control-allow-origin' not in response.headers, origin

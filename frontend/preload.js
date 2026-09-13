@@ -10,6 +10,17 @@
 
 const { contextBridge, ipcRenderer } = require("electron");
 
+// The backend URL, passed in via webPreferences.additionalArguments so it
+// is available synchronously -- before any page script runs. lib/api.ts
+// reads it at module load to build its base URL, so an async IPC round
+// trip would race the first request. This is what lets one installer be
+// pointed at a different deployment without rebuilding the UI bundle.
+const backendArg = process.argv.find((arg) => arg.startsWith("--study-loop-backend="));
+contextBridge.exposeInMainWorld(
+  "studyLoopBackendUrl",
+  backendArg ? backendArg.slice("--study-loop-backend=".length) : undefined,
+);
+
 contextBridge.exposeInMainWorld("kioskAPI", {
   getConfig: () => ipcRenderer.invoke("kiosk:getConfig"),
   requestExit: (pin) => ipcRenderer.invoke("kiosk:requestExit", pin),

@@ -3,7 +3,7 @@
 // hide/restore (synchronously, so it can't be skipped on exit), and proxies
 // file uploads to the FastAPI backend (which forwards them to Vultr).
 
-const { app, BrowserWindow, ipcMain, dialog, Menu, globalShortcut } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, Menu, globalShortcut, session } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { execFileSync, spawn } = require("child_process");
@@ -11,19 +11,89 @@ require("dotenv").config({ path: path.join(__dirname, ".env") });
 // The SmartSpectra key lives in the REPO ROOT .env, not frontend/.env --
 // presage/package.json already reads it from there (`node --env-file=../.env`),
 // and duplicating a key into a second file is how the two copies drift.
+// Harmless no-op in a packaged app, where neither file exists.
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
-const BACKEND_URL = process.env.BACKEND_URL || "http://127.0.0.1:8000";
-const NEXT_APP_URL = process.env.NEXT_APP_URL || "http://localhost:3000";
+// In a packaged app everything ships under resources/ as extraResources;
+// in a source checkout it sits in the repo. One flag, used everywhere the
+// two layouts differ.
+const PACKAGED = app.isPackaged;
+const RESOURCES = PACKAGED ? process.resourcesPath : path.join(__dirname, "..");
+
 const EXIT_PIN = process.env.EXIT_PIN || "";
-const PRESAGE_DIR = path.join(__dirname, "..", "presage");
+
+// The exported Next.js UI (casino_theme's `output: "export"` build). The
+// packaged app serves these files itself -- there is no `next dev` on an
+// end user's machine.
+const UI_DIR = PACKAGED
+  ? path.join(process.resourcesPath, "ui")
+  : path.join(__dirname, "casino_theme", "out");
+
+const PRESAGE_DIR = PACKAGED
+  ? path.join(process.resourcesPath, "presage")
+  : path.join(__dirname, "..", "presage");
 const PRESAGE_SCRIPT = path.join(PRESAGE_DIR, "session.mjs");
-// Which node runs the capture script. Deliberately a real node binary
-// rather than Electron-as-node (ELECTRON_RUN_AS_NODE): the SmartSpectra
-// SDK ships a native addon built against system Node's ABI, and loading it
-// under Electron's V8 is a version-mismatch crash waiting to happen.
-// Override if node isn't on PATH under whatever launched the app.
-const PRESAGE_NODE = process.env.PRESAGE_NODE || "node";
+
+// Which binary runs the capture script.
+//
+// Electron's own binary, in ELECTRON_RUN_AS_NODE mode -- NOT a system
+// `node`. An earlier version of this file required system Node on the
+// theory that the SmartSpectra SDK ships a node-gyp addon whose ABI
+// wouldn't match Electron's. That was wrong, and the SDK's README says so
+// outright: it is "pure-FFI ... no native addon, no binding.gyp, no
+// electron-rebuild, no node-gyp". The C++ runtime is loaded at runtime
+// through koffi, which is N-API and therefore ABI-stable across Node and
+// Electron.
+//
+// This matters for the installer: requiring system Node would mean anyone
+// who installs the .exe also has to install Node before the camera works.
+// Set PRESAGE_NODE to override with a real node binary if ever needed.
+const PRESAGE_NODE = process.env.PRESAGE_NODE || process.execPath;
+
+/** Where the backend lives, in precedence order.
+ *
+ * A single installer has to be able to point at a different deployment
+ * without being rebuilt, so this is resolved at runtime rather than baked
+ * into the UI bundle:
+ *
+ *   1. BACKEND_URL in the environment (or frontend/.env in a checkout).
+ *   2. backendUrl in <userData>/config.json -- the per-machine override,
+ *      editable after install without touching Program Files.
+ *   3. The default compiled in at build time.
+ *
+ * Anything unparseable is ignored rather than allowed to produce a window
+ * that silently talks to nothing. */
+function resolveBackendUrl() {
+  const candidates = [process.env.BACKEND_URL, readUserConfig().backendUrl, DEFAULT_BACKEND_URL];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      return new URL(candidate).origin;
+    } catch {
+      console.error(`Ignoring unparseable backend URL: ${candidate}`);
+    }
+  }
+  return "http://127.0.0.1:8000";
+}
+
+// Overridden at build time by electron-builder (see the "extraMetadata"
+// note in package.json) or simply edited before a build.
+const DEFAULT_BACKEND_URL = process.env.DEFAULT_BACKEND_URL || "http://127.0.0.1:8000";
+
+function userConfigPath() {
+  return path.join(app.getPath("userData"), "config.json");
+}
+
+function readUserConfig() {
+  try {
+    return JSON.parse(fs.readFileSync(userConfigPath(), "utf8"));
+  } catch {
+    // Missing or malformed is the normal case on a fresh install.
+    return {};
+  }
+}
+
+const BACKEND_URL = resolveBackendUrl();
 // Kiosk/lockdown is the DEFAULT now, not opt-in -- this app's whole purpose
 // is lockdown, so plain `npm start` should actually attempt it. Pass
 // --no-kiosk for local development (resizable window, no focus-stealing,
@@ -100,7 +170,13 @@ function restoreTaskbarIfNeeded() {
 // ---------------------------------------------------------------------------
 // Window creation
 // ---------------------------------------------------------------------------
-function createWindow() {
+// The UI server lives in its own module so its routing can be tested
+// without launching Electron -- see uiServer.js.
+const { startUiServer } = require("./uiServer");
+
+let uiServer = null;
+
+function createWindow(startUrl) {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -111,10 +187,14 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      // Handed to the preload synchronously, so lib/api.ts can read the
+      // backend URL before the first request rather than racing an async
+      // IPC round trip.
+      additionalArguments: [`--study-loop-backend=${BACKEND_URL}`],
     },
   });
 
-  mainWindow.loadURL(NEXT_APP_URL);
+  mainWindow.loadURL(startUrl);
 
   if (IS_KIOSK) {
     // Hide as soon as the window is ready.
@@ -152,7 +232,10 @@ function createWindow() {
             <div><h2>Could not load the app</h2>
             <p>${errorDescription} (code ${errorCode})</p>
             <p>Tried: ${validatedURL}</p>
-            <p>Make sure the Next.js dev server (casino_theme/) is running.</p></div>
+            <p>The interface files could not be loaded. If you are running from
+            source, build the UI first (<code>npm run build</code> in
+            frontend/casino_theme) or start <code>next dev</code> and set
+            NEXT_APP_URL.</p></div>
             </body></html>`),
       );
     });
@@ -281,11 +364,43 @@ app.whenReady().then(() => {
     }
   }
 
-  createWindow();
-
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  // Camera access for Presage. The capture process opens the device
+  // directly, but Electron still has to be willing to grant "media" or
+  // Windows/macOS will refuse at the OS layer. Scoped to the app's own
+  // loopback UI: a window that later loads remote content must not be able
+  // to turn the camera on by asking.
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const url = details?.requestingUrl || contents?.getURL() || "";
+    callback(permission === "media" && url.startsWith("http://127.0.0.1:"));
   });
+
+  // NEXT_APP_URL points the window at a running `next dev` instead of the
+  // exported build -- the fast path while iterating on the UI. Unset (the
+  // normal case, and always in a packaged app) it serves the export.
+  const devUrl = process.env.NEXT_APP_URL;
+  const ready = devUrl
+    ? Promise.resolve(devUrl)
+    : startUiServer(UI_DIR).then(({ url, server }) => {
+        uiServer = server;
+        return url;
+      });
+
+  ready
+    .then((startUrl) => {
+      console.log(`Loading UI from ${startUrl} (backend: ${BACKEND_URL})`);
+      createWindow(startUrl);
+      app.on("activate", () => {
+        if (BrowserWindow.getAllWindows().length === 0) createWindow(startUrl);
+      });
+    })
+    .catch((err) => {
+      // Without a window there is nothing to show a message in, and the
+      // emergency shortcut has nothing to close -- so say it plainly in a
+      // dialog rather than exiting silently on a blank screen.
+      console.error(err);
+      dialog.showErrorBox("Study Loop could not start", err.message);
+      app.quit();
+    });
 });
 
 app.on("window-all-closed", () => {
@@ -337,7 +452,7 @@ ipcMain.handle("kiosk:getConfig", async () => {
     backendUrl: BACKEND_URL,
     // Lets the wellbeing panel say "no key configured" instead of showing
     // a camera section that can never start.
-    hasPresageKey: Boolean(process.env.SMARTSPECTRA_API_KEY),
+    hasPresageKey: Boolean(presageApiKey()),
   };
 });
 
@@ -450,11 +565,26 @@ function stopPresage() {
   }, 5000);
 }
 
+/** The SmartSpectra key, from the environment or the per-machine config.
+ *
+ * A packaged app has no repo-root .env to read, and baking the key into
+ * the installer would ship a shared secret to every person who installs
+ * it -- the SDK's own docs warn against exactly that. So the supported
+ * path for a distributed build is <userData>/config.json, which each
+ * user fills in with their own key. */
+function presageApiKey() {
+  return process.env.SMARTSPECTRA_API_KEY || readUserConfig().smartspectraApiKey || "";
+}
+
 ipcMain.handle("presage:start", async (_event, options = {}) => {
   const { sessionId, token, sectionMinutes, breakSeconds } = options;
-  if (!process.env.SMARTSPECTRA_API_KEY) {
-    sendPresageEvent({ type: "status", status: "error", message: "No SMARTSPECTRA_API_KEY set." });
-    return { started: false, message: "No SMARTSPECTRA_API_KEY set in the repo-root .env." };
+  const apiKey = presageApiKey();
+  if (!apiKey) {
+    sendPresageEvent({ type: "status", status: "error", message: "No SmartSpectra API key configured." });
+    return {
+      started: false,
+      message: `No SmartSpectra API key. Set SMARTSPECTRA_API_KEY, or add {"smartspectraApiKey": "..."} to ${userConfigPath()}.`,
+    };
   }
   if (!fs.existsSync(PRESAGE_SCRIPT)) {
     sendPresageEvent({ type: "status", status: "error", message: "Capture script not found." });
@@ -467,6 +597,12 @@ ipcMain.handle("presage:start", async (_event, options = {}) => {
     cwd: PRESAGE_DIR,
     env: {
       ...process.env,
+      // Run Electron's bundled binary as plain Node. The SmartSpectra SDK
+      // is pure FFI over koffi (N-API), so it loads under Electron's
+      // runtime unchanged -- which is what keeps "install Node.js first"
+      // off the list of things an end user has to do.
+      ELECTRON_RUN_AS_NODE: "1",
+      SMARTSPECTRA_API_KEY: apiKey,
       // STUDY_SESSION_ID is always set here, so session.mjs attaches to
       // the session the UI already created rather than creating a second
       // one of its own.
@@ -501,7 +637,7 @@ ipcMain.handle("presage:start", async (_event, options = {}) => {
     presageProcess = null;
     const message =
       err.code === "ENOENT"
-        ? `Could not run "${PRESAGE_NODE}". Install Node.js or set PRESAGE_NODE to its path.`
+        ? `Could not run the capture process at "${PRESAGE_NODE}".`
         : err.message;
     console.error(`[presage] ${message}`);
     sendPresageEvent({ type: "status", status: "error", message });

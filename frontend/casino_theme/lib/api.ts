@@ -12,7 +12,31 @@ import { useSyncExternalStore } from "react";
  * `backend/core/config.py`'s CORS_ORIGINS has to list this app's origin.
  */
 
-const API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+/** Where the backend lives.
+ *
+ * Resolution order matters for the packaged desktop app:
+ *
+ * 1. `window.studyLoopBackendUrl` — injected by the Electron preload from
+ *    the main process. This is the only one that can change *after* the UI
+ *    was built, which is what lets one installer point at a different
+ *    deployment (see frontend/main.js's resolveBackendUrl).
+ * 2. `NEXT_PUBLIC_API_URL` — inlined at build time. Used by `next dev` and
+ *    by a browser-hosted build.
+ * 3. Localhost, for someone running everything on their own machine.
+ *
+ * Read once at module load: the preload runs before any page script, so
+ * the value is already there, and a getter re-reading it per request would
+ * let the base URL change mid-session. */
+function resolveApiBase(): string {
+  const fromKiosk =
+    typeof window !== "undefined"
+      ? (window as { studyLoopBackendUrl?: string }).studyLoopBackendUrl
+      : undefined;
+  const configured = fromKiosk || process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+  return configured.replace(/\/$/, "");
+}
+
+const API_BASE = resolveApiBase();
 const API_V1 = `${API_BASE}/api/v1`;
 const TOKEN_KEY = "studyloop.token";
 
