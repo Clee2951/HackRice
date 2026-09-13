@@ -12,8 +12,8 @@ export function Landing() {
       </div>
 
       <div className="relative flex flex-col items-center justify-center h-[50vh] font-serif font-extrabold text-8xl text-amber-400">
-        <div>RANDOM</div>
-        <div>RANDOM</div>
+        <div>FACE</div>
+        <div>DOWN</div>
 </div>
 
       {/*1 top right*/}
