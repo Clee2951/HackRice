@@ -2,6 +2,12 @@
 // Electron main process: creates the kiosk window, manages Windows taskbar
 // hide/restore (synchronously, so it can't be skipped on exit), and proxies
 // file uploads to the FastAPI backend (which forwards them to Vultr).
+let mainWindow = null;
+let lockdownActive = false;
+let allowExit = false;
+
+let backendProcess = null;
+let presageProcess = null;
 
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const path = require("path");

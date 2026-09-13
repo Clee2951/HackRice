@@ -20,3 +20,12 @@ venv/
 
 # Claude Code local settings (personal, machine-specific — not shared)
 .claude/settings.local.json
+
+
+.next/
+out/
+dist/
+
+*.db
+*.db-shm
+*.db-wal
