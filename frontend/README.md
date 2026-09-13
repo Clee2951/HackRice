@@ -41,10 +41,29 @@ wrong — during a **break**, while **paused**, and once a session is
 shortcut and the injected exit button are registered at startup
 regardless, so the way out exists before lockdown ever engages.
 
-While locked, the window is also made non-minimizable and non-closable.
-Both are undone by the emergency exit before it quits — `app.quit()` goes
-through the window's close path, and an unclosable window can refuse it,
-which would defeat the one control that must never fail.
+### Why the window is frameless
+
+With a frame, macOS gives the window traffic lights and a draggable title
+bar — so the green button full-screens it back out and the title bar drags
+it aside, and "lockdown" means nothing. `frame: false` at construction
+removes both. Nothing in the UI sets `-webkit-app-region: drag`, so a
+frameless window here cannot be moved at all.
+
+`movable`, `minimizable`, `maximizable` and `closable` are set false too.
+Note these four are **macOS and Windows only** in Electron — they are
+no-ops on Linux, so a Linux run is not a valid test of them.
+
+`--no-kiosk` keeps the normal frame, since a window you can move and close
+is the point during development.
+
+The trade-off: during a break, lockdown releases and leaves a frameless
+window with no title bar to drag. The EXIT button is still there, and a
+break is meant to be spent away from the screen anyway.
+
+The emergency exit undoes all of it — kiosk, closable, minimizable,
+movable — before quitting. `app.quit()` goes through the window's close
+path, and an unclosable window can refuse it, which would defeat the one
+control that must never fail.
 
 Deliberately **not** done: `setAlwaysOnTop` and stealing focus back on
 `blur`. That combination locked a teammate out of his own machine twice.

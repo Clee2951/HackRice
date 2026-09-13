@@ -203,19 +203,37 @@ function setLockdown(on) {
   if (on === lockedDown) return { lockedDown };
 
   lockedDown = on;
-  mainWindow.setKiosk(on);
-  // setKiosk already implies full screen on macOS, and calling
-  // setFullScreen unconditionally right after it can toggle the window
-  // straight back out -- the two fight. Only correct it if kiosk didn't
-  // land the window where we asked.
-  if (mainWindow.isFullScreen() !== on) mainWindow.setFullScreen(on);
+
+  // Traffic lights. The window is already frameless, but hiding them
+  // explicitly covers the macOS versions where frame:false still draws
+  // them over the content. No-op elsewhere, and wrapped because Electron
+  // rejects this call under some titleBarStyle values.
+  if (process.platform === "darwin") {
+    try {
+      mainWindow.setWindowButtonVisibility(!on);
+    } catch (err) {
+      console.error("Could not toggle window buttons:", err.message);
+    }
+  }
+
   // Close the ordinary ways out of the window. Deliberately NOT
   // setAlwaysOnTop or focus-stealing on blur: that combination is what
   // locked a teammate out of his own machine twice and cost two hard
-  // reboots. These only grey out the window's own controls; they never
+  // reboots. These only disable the window's own controls; they never
   // out-fight the OS.
+  mainWindow.setMovable(!on);
+  mainWindow.setResizable(!on);
   mainWindow.setMinimizable(!on);
+  mainWindow.setMaximizable(!on);
   mainWindow.setClosable(!on);
+
+  // Kiosk last, and on its own. It is what hides the macOS dock and menu
+  // bar. An earlier version also called setFullScreen right afterwards,
+  // guarded by isFullScreen() -- but macOS full-screen transitions are
+  // animated and asynchronous, so isFullScreen() still reads false at
+  // that moment and the guard let the second call through anyway. The two
+  // then fought and the window could land un-fullscreened.
+  mainWindow.setKiosk(on);
   // The app menu is already removed at startup (see app.whenReady) and
   // stays removed -- rebuilding Electron's default template just to put
   // Cmd+Q back between rounds isn't worth the surface area.
@@ -229,11 +247,23 @@ function createWindow(startUrl) {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
-    // Starts as an ordinary window. setLockdown() takes it full-screen when
-    // a study round begins.
     fullscreen: false,
     kiosk: false,
     autoHideMenuBar: true,
+    // Frameless whenever lockdown is in play. This is what actually
+    // removes macOS's traffic lights and its draggable title bar -- with a
+    // frame, the green button still full-screens the window back out and
+    // the title bar still drags it around, which makes "lockdown" mean
+    // nothing. Nothing in the UI sets -webkit-app-region: drag, so a
+    // frameless window here cannot be moved at all.
+    //
+    // --no-kiosk keeps the normal frame, since a window you can move and
+    // close is the point during development.
+    frame: LOCKDOWN_DISABLED,
+    movable: LOCKDOWN_DISABLED,
+    resizable: LOCKDOWN_DISABLED,
+    minimizable: LOCKDOWN_DISABLED,
+    maximizable: LOCKDOWN_DISABLED,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -393,8 +423,10 @@ function emergencyExit() {
   // window's close path, and a window left unclosable can refuse it --
   // which would defeat the one control that must never fail.
   if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setKiosk(false);
     mainWindow.setClosable(true);
     mainWindow.setMinimizable(true);
+    mainWindow.setMovable(true);
   }
   restoreTaskbarIfNeeded();
   app.quit();
