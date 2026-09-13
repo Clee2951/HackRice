@@ -35,8 +35,8 @@ declare global {
  *   x = 50 + R·cosθ ,  y = 0 + R·sinθ
  */
 const SEAT_COUNT = 6
-const ARC_START = 20 // degrees from the right edge
-const ARC_END = 160 // degrees toward the left edge
+const ARC_START = 160 // degrees from the left edge
+const ARC_END = 20 // degrees toward the right edge
 const SEAT_RADIUS = 0.80 // fraction of the felt radius the cards sit at (0-1)
 // The felt box is 2:1, so equal x/y percentages are not equal distances.
 // Scale x by 50% of the width and y by 100% of the height to trace the ellipse.
@@ -61,7 +61,8 @@ function buildSeats(seatCount: number) {
 export function BlackjackTable() {
   const router = useRouter()
   const [documents, setDocuments] = useState<SelectedDocument[]>([])
-  const seats = buildSeats(SEAT_COUNT + documents.length)
+  const seats = buildSeats(Math.max(SEAT_COUNT, documents.length))
+  const tableMinWidth = 1100 + Math.max(0, documents.length - SEAT_COUNT) * 120
 
   const [exitPrompt, setExitPrompt] = useState<{
     open: boolean
@@ -163,7 +164,7 @@ export function BlackjackTable() {
       )}
 
       {/* Table box: width drives the semi-circle; height is half of width. */}
-      <div className="relative aspect-[2/1] w-full max-w-[1100px]">
+      <div className="relative aspect-[2/1] w-full max-w-[1100px] shrink-0" style={{ minWidth: `${tableMinWidth}px` }}>
         {/* Wooden rail (slightly larger semi-circle behind the felt) */}
         <div
           className="absolute inset-0 rounded-b-full bg-green-900 bg-gradient-to-b border-b-20 border-x-20 border-amber-900 from-rail-highlight to-rail shadow-[0_30px_60px_-20px_rgba(0,0,0,0.8)]"
@@ -216,26 +217,25 @@ export function BlackjackTable() {
 
         {/* Card seats along the arc perimeter */}
         {seats.map((seat, index) => {
-          const document = documents[index - SEAT_COUNT]
+          const document = documents[index]
 
           return (
-          <CardSlot
-            key={seat.id}
-            x={seat.x}
-            y={seat.y}
-            rotation={seat.rotation}
-            label={document?.name ?? seat.label}
-            documentName={document?.name}
-            onSelect={() => {
-              if (document) {
+            <CardSlot
+              key={seat.id}
+              x={seat.x}
+              y={seat.y}
+              rotation={seat.rotation}
+              label={document?.name ?? seat.label}
+              documentName={document?.name}
+              placeholder={!document}
+              onSelect={document ? () => {
                 const params = new URLSearchParams({
                   name: document.name,
                   path: document.path,
                 })
                 router.push(`/reader?${params.toString()}`)
-              }
-            }}
-          />
+              } : undefined}
+            />
           )
         })}
       </div>
