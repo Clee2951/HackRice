@@ -282,3 +282,53 @@ def test_gemini_adapter_validation(monkeypatch):
     with pytest.raises(HTTPException) as caught:
         adapter.structured(prompts.CHAT, {}, ChatAnswer)
     assert caught.value.status_code == 502
+
+
+def test_object_storage_upload_and_download(setup, monkeypatch):
+    """With Vultr configured, bytes go to the bucket and /file redirects.
+
+    Uses a fake S3 client rather than a live bucket: the point is that
+    create_document() stops writing the blob and that /file hands back a
+    presigned redirect instead of the body.
+    """
+    from backend.services import storage
+    client, factory, ai = setup
+    bucket = {}
+
+    class FakeS3:
+        def put_object(self, Bucket, Key, Body, ContentType):
+            bucket[Key] = (Body, ContentType)
+
+        def generate_presigned_url(self, op, Params, ExpiresIn):
+            return f'https://example-bucket.invalid/{Params["Key"]}?signed=1'
+
+    monkeypatch.setattr(storage, 'configured', lambda: True)
+    monkeypatch.setattr(storage, '_client', lambda: FakeS3())
+    monkeypatch.setattr(storage.settings, 'VULTR_STORAGE_BUCKET', 'test-bucket')
+
+    h = account(client, 'storage@example.com')
+    text = b'For an ohmic resistor, voltage equals current times resistance. V = IR.'
+    did = client.post('/api/v1/documents', headers=h,
+                      files={'file': ('my notes!.txt', text, 'text/plain')}).json()['id']
+
+    key = f'users/1/{did}/my_notes_.txt'
+    assert bucket[key] == (text, 'text/plain')
+    with factory() as db:
+        from backend.models.document import Document
+        row = db.query(Document).filter_by(document_id=did).first()
+        # The whole point of object storage: the blob column stays empty.
+        assert row.original is None and row.storage_key == key
+
+    saved = client.get(f'/api/v1/documents/{did}/file', headers=h, follow_redirects=False)
+    assert saved.status_code == 307
+    assert saved.headers['location'] == f'https://example-bucket.invalid/{key}?signed=1'
+
+
+def test_unconfigured_object_storage_falls_back_to_the_database(setup):
+    """No Vultr settings is a supported mode, not an error."""
+    from backend.services import storage
+    client, factory, ai = setup
+    assert not storage.configured()
+    h = account(client, 'blob@example.com')
+    did = document(client, h)
+    assert client.get(f'/api/v1/documents/{did}/file', headers=h).status_code == 200

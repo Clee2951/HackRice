@@ -17,7 +17,14 @@ class Document(Base):
     # tracking, optimistic locking) -- kept as straightforward additions
     # rather than dropped.
     media_type = Column(String(100), nullable=False)
-    original = Column(LargeBinary, nullable=False)
+    # Exactly one of these two holds the uploaded file. When Vultr Object
+    # Storage is configured (services/storage.py), the bytes go there and
+    # storage_key names the object; otherwise they stay here as a blob so
+    # a developer with no Vultr account still gets a working app. Both are
+    # nullable because neither is used in both modes -- documents.py's
+    # /file endpoint picks whichever is set.
+    original = Column(LargeBinary, nullable=True)
+    storage_key = Column(String(512), nullable=True)
     progress = Column(JSON, nullable=False, default=dict)
     revision = Column(Integer, nullable=False, default=1)
     created_at = Column(Float, default=time.time, nullable=False)

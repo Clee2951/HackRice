@@ -9,6 +9,7 @@ from backend.core.config import settings
 from backend.ai import prompts
 from backend.schemas.study import ObjectiveSet
 from backend.models.document import Document, DocumentObject
+from backend.services import storage
 
 
 def extract_pages(filename, data):
@@ -89,22 +90,38 @@ def create_document(db, uid, title, media_type, data, pages, objectives):
     # which already numbers them "c1", "c2", ... in the same order; a
     # brand-new document has no existing rows to collide with, so this
     # doesn't need its own next_id lookup the way document_id does).
+    use_object_storage = storage.configured()
     for _ in range(3):
         document_id = next_document_id(db, uid)
         doc = Document(uid=uid, document_id=document_id, document_title=title,
-                       media_type=media_type, original=data, progress={})
+                       media_type=media_type, progress={})
         db.add(doc)
         try:
             db.flush()
         except IntegrityError:
             db.rollback()
             continue
+        # Only write to Vultr once the id is actually ours -- the flush
+        # above is what settles the race with a concurrent upload, and
+        # uploading before it would orphan an object on every retry.
+        if use_object_storage:
+            doc.storage_key = storage.put_bytes(uid, document_id, title, data, media_type)
+        else:
+            doc.original = data
         for index, obj in enumerate(objectives, 1):
             db.add(DocumentObject(uid=uid, document_id=document_id, object_id=index,
                                   object_title=obj["title"], expected_points=obj["expected_points"],
                                   source_page=obj["source_pages"],
                                   content=content_for_pages(pages, obj["source_pages"])))
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            # The object is already in the bucket at this point; without
+            # this cleanup a failed commit leaves a file no row refers to.
+            db.rollback()
+            if doc.storage_key:
+                storage.delete(doc.storage_key)
+            raise
         return doc
     raise HTTPException(409, "Could not allocate a document slot, please retry")
 

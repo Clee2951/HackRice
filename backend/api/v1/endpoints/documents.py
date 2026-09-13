@@ -1,10 +1,11 @@
 from pathlib import Path
 from fastapi import APIRouter, Depends, UploadFile, File, Response
+from fastapi.responses import RedirectResponse
 from backend.api.deps import get_db, get_current_user
 from backend.ai.gemini_client import get_ai
 from backend.core.config import settings
 from backend.models.document import Document
-from backend.services import document_service
+from backend.services import document_service, storage
 from backend.services.study_service import owned_document, objects_view
 
 router = APIRouter()
@@ -44,6 +45,15 @@ def get_content(document_id: int, db=Depends(get_db), user=Depends(get_current_u
 
 @router.get("/{document_id}/file")
 def get_file(document_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+    """The original upload, for the reader pane's <iframe>.
+
+    Serves from wherever create_document() put the bytes: a short-lived
+    presigned Vultr URL when object storage is configured, otherwise the
+    DB blob. The redirect keeps the bucket private -- the browser never
+    holds credentials, and the signed URL expires in an hour.
+    """
     doc = owned_document(db, user.uid, document_id)
-    return Response(content=doc.original, media_type=doc.media_type,
+    if doc.storage_key:
+        return RedirectResponse(storage.presigned_get(doc.storage_key), status_code=307)
+    return Response(content=doc.original or b"", media_type=doc.media_type,
                     headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
