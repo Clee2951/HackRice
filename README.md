@@ -109,15 +109,23 @@ At this point <http://localhost:3000> is a fully working app in a plain
 browser — sign up, upload, study. The camera and the lockdown are the only
 things that need Electron.
 
+`npm run dev` keeps hot reload. `npm run build` writes the static export to
+`out/`, which is what the Electron app serves.
+
 ### 3. Electron kiosk
 
 ```bash
 cd frontend
 npm install
 cp .env.example .env
-npm start        # kiosk/lockdown mode
-npm run dev      # ordinary window, for iterating
+npm run build:ui   # export the UI the shell serves (once, or after UI changes)
+npm start          # kiosk/lockdown mode
+npm run dev        # ordinary window, for iterating
 ```
+
+To iterate on the UI with hot reload instead of rebuilding the export each
+time, run `next dev` and set `NEXT_APP_URL=http://localhost:3000` — the
+shell will point at it rather than serving `out/`.
 
 ### 4. Camera capture (optional)
 
@@ -133,6 +141,55 @@ The kiosk starts and stops this itself, per round. Nothing to run by hand.
 > safety note in [frontend/README.md](frontend/README.md) before changing
 > anything about lockdown behaviour — an earlier version hard-locked a
 > real person out of their machine twice.
+
+## Shipping it as a Windows installer
+
+The app is self-contained: the Electron shell serves the exported UI
+itself, so an installed copy needs no `next dev`. It still needs a backend
+to talk to — deploy `backend/` somewhere reachable (a Vultr instance is
+the obvious home, since the database and object storage already live
+there) and point the installer at it.
+
+### Build it in CI (no Windows machine needed)
+
+`.github/workflows/build-desktop.yml` builds on a `windows-latest` runner
+and uploads `StudyLoop-Setup-<version>.exe` as an artifact. It runs on any
+push touching `frontend/` or `presage/`, or on demand:
+
+> Actions → **Build Windows installer** → **Run workflow**, optionally
+> setting the backend URL the installer defaults to.
+
+Set a repo variable `BACKEND_URL` (Settings → Secrets and variables →
+Actions → Variables) to your deployed API and every build picks it up.
+
+It's built natively on Windows rather than cross-compiled: NSIS
+cross-builds need Wine, and the SmartSpectra native runtime has to be the
+Windows closure — a host-platform macro would silently ship the wrong one.
+
+### Or build locally
+
+```bash
+cd frontend && npm run build:win     # needs to run on Windows
+```
+
+### Where the installed app reads its settings
+
+Two things are per-machine rather than baked into the installer, both in
+`%APPDATA%/Study Loop/config.json`:
+
+```json
+{
+  "backendUrl": "https://your-vultr-host",
+  "smartspectraApiKey": "..."
+}
+```
+
+`backendUrl` overrides the build-time default, so one installer can be
+repointed without rebuilding. `smartspectraApiKey` is deliberately *not*
+baked in — shipping one key inside an installer hands the same secret to
+everyone who installs it, which the SDK's own docs warn against. Without
+it the app works normally and the wellbeing panel reports the camera as
+unavailable.
 
 ## Tests
 

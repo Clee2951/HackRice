@@ -1,0 +1,92 @@
+name: Build Windows installer
+
+# Produces StudyLoop-Setup-<version>.exe as a downloadable artifact, so the
+# installer can be built without owning a Windows machine. electron-builder
+# is run natively on Windows rather than cross-compiled: NSIS cross-builds
+# from Linux/macOS need Wine, and the SmartSpectra native runtime has to be
+# the Windows closure, which a host-platform macro would get wrong.
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "frontend/**"
+      - "presage/**"
+      - ".github/workflows/build-desktop.yml"
+  workflow_dispatch:
+    inputs:
+      backend_url:
+        description: "Backend the installer points at by default"
+        required: false
+        default: "http://127.0.0.1:8000"
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # --- The UI, exported to static files -------------------------------
+      # NEXT_PUBLIC_API_URL is only the fallback baked into the bundle; the
+      # installed app prefers the URL the main process resolves at runtime
+      # (environment, then <userData>/config.json). Baking one in just means
+      # a fresh install has somewhere sensible to point.
+      - name: Build the UI
+        working-directory: frontend/casino_theme
+        env:
+          NEXT_PUBLIC_API_URL: ${{ inputs.backend_url || vars.BACKEND_URL || 'http://127.0.0.1:8000' }}
+        run: |
+          npm ci
+          npm run build
+
+      # --- The capture process and its native runtime ---------------------
+      - name: Install Presage dependencies
+        working-directory: presage
+        run: npm ci
+
+      # All four platform runtimes install as hard dependencies (~356 MB);
+      # only the Windows one is ever loaded, and shipping the rest would add
+      # a quarter of a gigabyte to the installer for nothing.
+      - name: Drop non-Windows native runtimes
+        working-directory: presage
+        shell: pwsh
+        run: |
+          Get-ChildItem node_modules/@smartspectra -Directory |
+            Where-Object { $_.Name -like 'node-sdk-*' -and $_.Name -ne 'node-sdk-win32-x64' } |
+            ForEach-Object { Write-Host "removing $($_.Name)"; Remove-Item -Recurse -Force $_.FullName }
+          if (-not (Test-Path node_modules/@smartspectra/node-sdk-win32-x64/smartspectra_capi.dll)) {
+            throw "Windows native runtime missing - the installer would ship without a working camera"
+          }
+
+      # --- Package --------------------------------------------------------
+      - name: Build the installer
+        working-directory: frontend
+        env:
+          DEFAULT_BACKEND_URL: ${{ inputs.backend_url || vars.BACKEND_URL || 'http://127.0.0.1:8000' }}
+        run: |
+          npm ci
+          npx electron-builder --win --publish never
+
+      - name: Check the installer exists
+        working-directory: frontend
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist/*.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw "no .exe produced" }
+          "Built $($exe.Name) ($([math]::Round($exe.Length / 1MB, 1)) MB)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StudyLoop-Windows-Installer
+          path: frontend/dist/*.exe
+          if-no-files-found: error
+          retention-days: 30
