@@ -41,6 +41,23 @@ wrong — during a **break**, while **paused**, and once a session is
 shortcut and the injected exit button are registered at startup
 regardless, so the way out exists before lockdown ever engages.
 
+### Why full screen is checked, not trusted
+
+`isFullScreen()` reports the *request*, not the result. macOS full screen
+is an asynchronous animated transition the OS can decline, and when it
+does nothing throws — the flag still reads true. Seen directly while
+testing: `isFullScreen()` true and `isKiosk()` true while the window sat
+at 1288x804 on a 1440x900 screen.
+
+So `ensureCoversScreen()` treats the bounds as the truth and sets them
+explicitly if the window isn't covering its display, 600 ms and 2 s after
+lockdown engages. Both calls are no-ops when full screen actually worked.
+
+One thing that silently defeats all of this: **`resizable: false`**. macOS
+refuses to put a non-resizable window into full screen, and reports no
+error. It must stay `true`, which costs nothing — the window is frameless,
+so there are no edges to grab.
+
 ### Why the window is frameless
 
 With a frame, macOS gives the window traffic lights and a draggable title

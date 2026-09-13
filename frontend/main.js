@@ -3,7 +3,7 @@
 // hide/restore (synchronously, so it can't be skipped on exit), and proxies
 // file uploads to the FastAPI backend (which forwards them to Vultr).
 
-const { app, BrowserWindow, ipcMain, dialog, Menu, globalShortcut, session } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, Menu, globalShortcut, screen, session } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { execFileSync, spawn } = require("child_process");
@@ -187,6 +187,41 @@ const { startUiServer } = require("./uiServer");
 
 let uiServer = null;
 
+/** Force the window to actually cover its display.
+ *
+ * isFullScreen() reports the request, not the result. macOS full screen is
+ * an asynchronous animated transition the OS can simply decline -- and
+ * when it does, nothing throws and the flag still reads true. Observed
+ * directly while testing: isFullScreen() true and isKiosk() true while the
+ * window sat at 1288x804 on a 1440x900 screen.
+ *
+ * So the flags are treated as a request and the bounds as the truth. If
+ * the window isn't covering the display shortly after the transition
+ * should have settled, its bounds are set explicitly. Cheap, and it
+ * behaves the same whatever the platform decided to do.
+ */
+// Window managers routinely land a window a pixel or two off what was
+// asked for. Correcting that is pointless and just makes this log noise
+// and re-set bounds it already set; only a real gap is worth acting on.
+const COVERAGE_SLACK_PX = 4;
+
+function ensureCoversScreen() {
+  if (!mainWindow || mainWindow.isDestroyed() || !lockedDown) return;
+  const want = screen.getDisplayNearestPoint(mainWindow.getBounds()).bounds;
+  const have = mainWindow.getBounds();
+  const covers =
+    have.width >= want.width - COVERAGE_SLACK_PX &&
+    have.height >= want.height - COVERAGE_SLACK_PX &&
+    have.x <= want.x + COVERAGE_SLACK_PX &&
+    have.y <= want.y + COVERAGE_SLACK_PX;
+  if (covers) return;
+  console.log(
+    `Full screen was declined (window ${have.width}x${have.height} on a ` +
+      `${want.width}x${want.height} display) -- setting bounds directly.`,
+  );
+  mainWindow.setBounds(want);
+}
+
 /** Engage or release lockdown at runtime.
  *
  * Driven by the study phase rather than by launch, so the window is
@@ -222,7 +257,6 @@ function setLockdown(on) {
   // reboots. These only disable the window's own controls; they never
   // out-fight the OS.
   mainWindow.setMovable(!on);
-  mainWindow.setResizable(!on);
   mainWindow.setMinimizable(!on);
   mainWindow.setMaximizable(!on);
   mainWindow.setClosable(!on);
@@ -238,7 +272,14 @@ function setLockdown(on) {
   // stays removed -- rebuilding Electron's default template just to put
   // Cmd+Q back between rounds isn't worth the surface area.
   setTaskbar(on ? "hide" : "show");
-  if (on) mainWindow.focus();
+  if (on) {
+    mainWindow.focus();
+    // Two checks: one once the macOS transition animation should have
+    // settled, one later in case a slow machine or a display change moved
+    // the goalposts. Both are no-ops when full screen actually worked.
+    setTimeout(ensureCoversScreen, 600);
+    setTimeout(ensureCoversScreen, 2000);
+  }
   console.log(`Lockdown ${on ? "engaged" : "released"}.`);
   return { lockedDown };
 }
@@ -247,8 +288,12 @@ function createWindow(startUrl) {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
-    fullscreen: false,
-    kiosk: false,
+    // Born full-screen and in kiosk mode rather than transitioning into it
+    // after paint. macOS full-screen is an animated, asynchronous
+    // transition that can be refused; not needing it at all is more
+    // reliable than asking for it and hoping.
+    fullscreen: !LOCKDOWN_DISABLED,
+    kiosk: !LOCKDOWN_DISABLED,
     autoHideMenuBar: true,
     // Frameless whenever lockdown is in play. This is what actually
     // removes macOS's traffic lights and its draggable title bar -- with a
@@ -261,9 +306,16 @@ function createWindow(startUrl) {
     // close is the point during development.
     frame: LOCKDOWN_DISABLED,
     movable: LOCKDOWN_DISABLED,
-    resizable: LOCKDOWN_DISABLED,
     minimizable: LOCKDOWN_DISABLED,
     maximizable: LOCKDOWN_DISABLED,
+    // resizable and fullscreenable must stay TRUE even under lockdown.
+    // macOS refuses to put a non-resizable window into full screen, so
+    // resizable:false silently defeats kiosk mode -- the window stays a
+    // normal size and nothing reports an error. Being able to resize
+    // costs nothing here: the window is frameless, so there are no edges
+    // or corners to grab.
+    resizable: true,
+    fullscreenable: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
