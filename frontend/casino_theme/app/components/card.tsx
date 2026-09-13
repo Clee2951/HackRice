@@ -13,6 +13,8 @@ type CardSlotProps = {
   label: string
   /** Optional document name shown on a card created from a selected file */
   documentName?: string
+  /** Renders an empty, non-interactive slot for an unassigned seat */
+  placeholder?: boolean
   /** Fired when the card is clicked — hook a PDF open handler here later */
   onSelect?: () => void
 }
@@ -28,9 +30,29 @@ function getRandomCardColor() {
   return CARD_COLORS[Math.floor(Math.random() * CARD_COLORS.length)]
 }
 
-export function CardSlot({ x, y, rotation, label, documentName, onSelect }: CardSlotProps) {
+export function CardSlot({ x, y, rotation, label, documentName, placeholder, onSelect }: CardSlotProps) {
   const cardValue = useMemo(() => getRandomCardValue(), [])
   const cardColor = useMemo(() => getRandomCardColor(), [])
+
+  if (placeholder) {
+    return (
+      <div
+        aria-hidden="true"
+        className="absolute z-20 -translate-x-1/2 -translate-y-1/2"
+        style={{ left: `${x}%`, top: `${y}%` }}
+      >
+        <span
+          className="flex items-center justify-center rounded-lg border-2 border-dashed border-slate-400/60 bg-slate-500/25"
+          style={{
+            width: "clamp(48px, 6vw, 78px)",
+            height: "clamp(68px, 8.4vw, 110px)",
+            transform: `rotate(${rotation}deg)`,
+          }}
+        />
+      </div>
+    )
+  }
+
   const colorClass = cardColor === "red" ? "text-red-600" : "text-zinc-900"
 
   return (
