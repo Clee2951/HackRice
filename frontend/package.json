@@ -39,9 +39,19 @@
         "from": "../presage",
         "to": "presage",
         "filter": [
+          "*.mjs",
+          "package.json"
+        ]
+      },
+      {
+        "from": "../presage/node_modules",
+        "to": "presage/node_modules",
+        "filter": [
           "**/*",
           "!**/*.map",
-          "!.env*"
+          "!**/*.md",
+          "!**/test/**",
+          "!**/.bin/**"
         ]
       }
     ],

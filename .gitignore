@@ -11,6 +11,12 @@ backend/.env
 node_modules/
 npm-debug.log*
 
+# Build output: the packaged desktop app and the exported UI it serves.
+# Hundreds of MB of Electron runtime and the SmartSpectra native closure --
+# rebuilt by `npm run build`, never committed.
+frontend/dist/
+frontend/casino_theme/out/
+
 # Python
 __pycache__/
 *.pyc
