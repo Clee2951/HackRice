@@ -1,6 +1,28 @@
 "use client"
 
+import { useRouter } from "next/navigation"
+import { useState } from "react"
 import { CardSlot } from "./card"
+
+type SelectedDocument = {
+  id: string
+  name: string
+  path: string
+}
+
+type KioskAPI = {
+  pickFile: () => Promise<{
+    canceled: boolean
+    filePath?: string
+    fileName?: string
+  }>
+}
+
+declare global {
+  interface Window {
+    kioskAPI?: KioskAPI
+  }
+}
 
 /**
  *
@@ -10,7 +32,7 @@ import { CardSlot } from "./card"
  * A seat at angle θ (measured downward from the right of center) sits at:
  *   x = 50 + R·cosθ ,  y = 0 + R·sinθ
  */
-let SEAT_COUNT = 6
+const SEAT_COUNT = 6
 const ARC_START = 20 // degrees from the right edge
 const ARC_END = 160 // degrees toward the left edge
 const SEAT_RADIUS = 0.80 // fraction of the felt radius the cards sit at (0-1)
@@ -19,10 +41,10 @@ const SEAT_RADIUS = 0.80 // fraction of the felt radius the cards sit at (0-1)
 const RX = 50
 const RY = 100
 
-function buildSeats() {
+function buildSeats(seatCount: number) {
   const seats = []
-  for (let i = 0; i < SEAT_COUNT; i++) {
-    const t = SEAT_COUNT === 1 ? 0.5 : i / (SEAT_COUNT - 1)
+  for (let i = 0; i < seatCount; i++) {
+    const t = seatCount === 1 ? 0.5 : i / (seatCount - 1)
     const angle = ARC_START + (ARC_END - ARC_START) * t
     const rad = (angle * Math.PI) / 180
     const x = 50 + SEAT_RADIUS * RX * Math.cos(rad)
@@ -34,9 +56,33 @@ function buildSeats() {
   return seats
 }
 
-const SEATS = buildSeats()
-
 export function BlackjackTable() {
+  const router = useRouter()
+  const [documents, setDocuments] = useState<SelectedDocument[]>([])
+  const seats = buildSeats(SEAT_COUNT + documents.length)
+
+  async function addFile() {
+    if (!window.kioskAPI) {
+      console.error("File selection is available when the app is running in Electron.")
+      return
+    }
+
+    const picked = await window.kioskAPI.pickFile()
+    if (picked.canceled || !picked.filePath || !picked.fileName) return
+
+    const filePath = picked.filePath
+    const fileName = picked.fileName
+
+    setDocuments((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        name: fileName,
+        path: filePath,
+      },
+    ])
+  }
+
   return (
     <div className="flex min-h-svh w-full items-start justify-center overflow-hidden bg-radial from-green-900 from-50% to-neutral-900 to-100% bg-felt-dark p-4">
       {/* Table box: width drives the semi-circle; height is half of width. */}
@@ -74,7 +120,8 @@ export function BlackjackTable() {
             className="absolute left-1/2 top-[6%] -translate-x-1/2 rounded-full border border-gold/40 bg-black/15
             flex items-center justify-center font-serif hover:scale-105 active:scale-95 duration-300 ease-in-out cursor-pointer font-extrabold"
             style={{ width: "34%", height: "12%" }}
-            aria-hidden="true">
+            type="button"
+            onClick={addFile}>
                 ADD FILE
             </button>
 
@@ -91,19 +138,29 @@ export function BlackjackTable() {
         </div>
 
         {/* Card seats along the arc perimeter */}
-        {SEATS.map((seat) => (
+        {seats.map((seat, index) => {
+          const document = documents[index - SEAT_COUNT]
+
+          return (
           <CardSlot
             key={seat.id}
             x={seat.x}
             y={seat.y}
             rotation={seat.rotation}
-            label={seat.label}
+            label={document?.name ?? seat.label}
+            documentName={document?.name}
             onSelect={() => {
-              // TODO: open the seat's PDF here once documents are attached.
-              console.log("[v0] card slot selected:", seat.label)
+              if (document) {
+                const params = new URLSearchParams({
+                  name: document.name,
+                  path: document.path,
+                })
+                router.push(`/reader?${params.toString()}`)
+              }
             }}
           />
-        ))}
+          )
+        })}
       </div>
     </div>
   )

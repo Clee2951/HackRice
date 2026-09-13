@@ -11,6 +11,8 @@ type CardSlotProps = {
   rotation: number
   /** Seat label shown until a real card/PDF is wired up */
   label: string
+  /** Optional document name shown on a card created from a selected file */
+  documentName?: string
   /** Fired when the card is clicked — hook a PDF open handler here later */
   onSelect?: () => void
 }
@@ -26,7 +28,7 @@ function getRandomCardColor() {
   return CARD_COLORS[Math.floor(Math.random() * CARD_COLORS.length)]
 }
 
-export function CardSlot({ x, y, rotation, label, onSelect }: CardSlotProps) {
+export function CardSlot({ x, y, rotation, label, documentName, onSelect }: CardSlotProps) {
   const cardValue = useMemo(() => getRandomCardValue(), [])
   const cardColor = useMemo(() => getRandomCardColor(), [])
   const colorClass = cardColor === "red" ? "text-red-600" : "text-zinc-900"
@@ -60,6 +62,11 @@ export function CardSlot({ x, y, rotation, label, onSelect }: CardSlotProps) {
           {cardValue}
         </span>
         <span className={`self-end rotate-180 text-xs font-semibold leading-none opacity-90 ${colorClass}`}>{cardValue}</span>
+        {documentName && (
+          <span className="max-w-full truncate text-[8px] font-semibold text-slate-700" title={documentName}>
+            {documentName}
+          </span>
+        )}
       </span>
     </button>
   )
