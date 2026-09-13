@@ -11,6 +11,10 @@ backend/.env
 node_modules/
 npm-debug.log*
 
+# Logs written by scripts/setup.sh and scripts/start.sh.
+.backend.log
+.build.log
+
 # Build output: the packaged desktop app and the exported UI it serves.
 # Hundreds of MB of Electron runtime and the SmartSpectra native closure --
 # rebuilt by `npm run build`, never committed.

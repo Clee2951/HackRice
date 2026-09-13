@@ -11,6 +11,61 @@ your retention.
 
 ---
 
+## Run it on your own machine
+
+Two commands, then paste one API key.
+
+**1. Get the code.** In Terminal:
+
+```bash
+git clone https://github.com/Clee2951/HackRice.git
+cd HackRice
+git checkout claude/hackrice-app-integration-y4v5yb
+```
+
+To browse it in VS Code: `code .` (or File → Open Folder → pick `HackRice`).
+VS Code is optional — every command below runs in Terminal.
+
+**2. Install everything.**
+
+```bash
+./scripts/setup.sh
+```
+
+Installs the backend and the interface, generates your signing secret, and
+creates `backend/.env`. Takes a few minutes. Add `--with-camera` if you
+also want the stress detection (a ~390 MB download, Apple Silicon only).
+
+**3. Add a Gemini key.** Open `backend/.env` and paste your key after
+`GOOGLE_API_KEY=`. Get one free at
+[aistudio.google.com](https://aistudio.google.com) → *Get API key*. Then:
+
+```bash
+./scripts/models.sh     # lists the models your key can use
+```
+
+Paste one of them after `GEMINI_MODEL=` in the same file.
+
+**4. Start it.**
+
+```bash
+./scripts/start.sh
+```
+
+Starts the backend and opens the app. Closing the window stops both.
+
+> Stuck in lockdown? **Cmd/Ctrl + Option/Alt + Shift + X** quits
+> immediately, whatever state the app is in.
+
+Then sign up with any email and an 8-character password, click **ADD FILE**
+to upload a PDF or text file, and click the card it deals you. Set the
+round length to 1 minute the first time so you're not waiting fifteen.
+
+Nothing here needs a server, a cloud account, or Vultr. Documents are
+stored in a local database file.
+
+---
+
 ## How the pieces fit together
 
 ```
@@ -68,9 +123,11 @@ study ──timer──► recall ──submit──► feedback ──► break
 - **break** — longer than configured if the last round's wellbeing report
   flagged sustained stress or drowsiness.
 
-## Running it
+## Running it by hand
 
-You need three things running. From the repo root:
+`scripts/setup.sh` and `scripts/start.sh` above do all of this for you.
+This section is for when you want to run the pieces separately — working
+on the backend with `--reload`, or on the UI with hot reload.
 
 ### 1. Backend
 
