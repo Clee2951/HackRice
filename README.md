@@ -52,10 +52,15 @@ Paste one of them after `GEMINI_MODEL=` in the same file.
 ./scripts/start.sh
 ```
 
-Starts the backend and opens the app. Closing the window stops both.
+Starts the backend and opens the app. **It opens locked down** — full
+screen, no way to tab away — and releases only during breaks.
 
-> Stuck in lockdown? **Cmd/Ctrl + Option/Alt + Shift + X** quits
-> immediately, whatever state the app is in.
+> **Read this before you launch it: Cmd/Ctrl + Option/Alt + Shift + X**
+> quits immediately, whatever state the app is in. It bypasses the PIN and
+> works even if the interface never loaded. There is also an EXIT button
+> in the top-right corner.
+>
+> Use `./scripts/start.sh --no-kiosk` while developing — it never locks.
 
 Then sign up with any email and an 8-character password, click **ADD FILE**
 to upload a PDF or text file, and click the card it deals you. Set the
@@ -178,14 +183,13 @@ npm run build:ui   # export the UI the shell serves (once, or after UI changes)
 npm start
 ```
 
-The app opens as an ordinary window and **locks down when a study round
-starts**, releasing for feedback and breaks. It used to lock down at
-launch, which meant a first-time user met an inescapable full-screen window
-before they had even logged in.
+The app **opens locked down** and stays that way — the login screen and
+the table are behind it too. It releases only where holding someone
+full-screen would be wrong: during a break, while paused, and once a
+session is complete.
 
-- `npm start` — normal behaviour, lockdown follows the phase
-- `npm start -- --kiosk` — lock down immediately (demos, exam settings)
-- `npm run dev` — never lock down, for iterating
+- `npm start` — locked from launch
+- `npm run dev` — never locks down, for iterating
 
 To iterate on the UI with hot reload instead of rebuilding the export each
 time, run `next dev` and set `NEXT_APP_URL=http://localhost:3000` — the

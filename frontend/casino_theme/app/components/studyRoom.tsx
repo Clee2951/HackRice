@@ -31,13 +31,13 @@ import { WellbeingPanel } from "./wellbeingPanel";
  * (recall, feedback) wait on the student, not a clock. */
 const TIMED: ReadonlySet<Phase> = new Set<Phase>(["study", "review", "break"]);
 
-/** Phases that lock the screen down.
+/** Phases that RELEASE the screen. Everything else stays locked.
  *
- * The working phases only. Feedback is reading a lesson and a break means
- * step away from the machine -- holding someone full-screen through either
- * is the behaviour that makes a focus tool feel like malware. Lockdown
- * used to engage at launch, before login, which was worse still. */
-const LOCKED: ReadonlySet<Phase> = new Set<Phase>(["study", "review", "recall"]);
+ * Lockdown is the default and the point of the app, so this list is
+ * deliberately short: a break exists so you can walk away from the
+ * machine, and a finished session has nothing left to protect. Study,
+ * review, recall and feedback all keep the screen locked. */
+const UNLOCKED: ReadonlySet<Phase> = new Set<Phase>(["break", "completed"]);
 
 /** Phases where the source document is allowed to be on screen.
  *
@@ -235,27 +235,30 @@ export function StudyRoom({ sessionId }: { sessionId: number }) {
   // ---------------------------------------------------------------------
   // Lockdown follows the phase
   // ---------------------------------------------------------------------
-  // Released while paused too: pausing is the user saying they need to
+  // Also released while paused: pausing is the user saying they need to
   // step away, and refusing to let them is how a focus aid turns into a
   // trap. Nothing here weakens the escape hatches -- the emergency
   // shortcut and the injected exit button are registered at startup and
   // stay live regardless of what this asks for.
-  const shouldLock = Boolean(session && !session.paused && LOCKED.has(session.phase));
+  //
+  // Until the session loads, stay locked. Defaulting to unlocked would
+  // flash the window out of full screen on every navigation into a round.
+  const shouldLock = session ? !session.paused && !UNLOCKED.has(session.phase) : true;
 
   useEffect(() => {
     const bridge = kiosk();
     if (!bridge) return;
     void bridge.setLockdown(shouldLock).catch(() => {
-      // Lockdown is a nicety; failing to engage it must never stop
-      // someone studying.
+      // Lockdown failing must never stop someone studying.
     });
   }, [shouldLock]);
 
-  // Leaving the study room at all releases lockdown, including via the
-  // "Back to table" button or a navigation this component doesn't own.
+  // Leaving the study room returns to the app's default, which is locked --
+  // the table and the login screen are behind the lockdown too. Only a
+  // break or an explicit exit takes you out of it.
   useEffect(() => {
     return () => {
-      void kiosk()?.setLockdown(false).catch(() => {});
+      void kiosk()?.setLockdown(true).catch(() => {});
     };
   }, []);
 

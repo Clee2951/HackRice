@@ -94,20 +94,21 @@ function readUserConfig() {
 }
 
 const BACKEND_URL = resolveBackendUrl();
-// Lockdown is driven by the STUDY PHASE, not by launch.
+// Lockdown is ON by default, from the moment the window appears.
 //
-// It used to engage the moment the app opened, which meant a first-time
-// user's very first impression -- before they had even logged in -- was an
-// inescapable full-screen window. That reads as a broken app rather than a
-// focus tool, and the natural reaction is to force-quit and not reopen it.
-// The renderer now calls kiosk:setLockdown as the session moves through its
-// phases (see casino_theme's studyRoom.tsx): locked while actually working,
-// released for feedback and breaks, when stepping away is the point.
+// This app's entire purpose is keeping you off everything else, so the
+// default has to be locked -- an opt-in lockdown is a timer with extra
+// steps. The renderer releases it for the phases where holding someone
+// full-screen would be wrong (see casino_theme's studyRoom.tsx): breaks,
+// a completed session, and while paused. Stepping away is the point of a
+// break, so the app gets out of the way for it and locks again after.
 //
-//   --no-kiosk   never lock down, whatever the phase (development)
-//   --kiosk      lock down immediately at launch (demos, exam settings)
+//   --no-kiosk   never lock down (development)
+//
+// The escape hatches do not depend on any of this: the emergency shortcut
+// and the injected exit button are registered at startup and stay live the
+// whole time the app is running.
 const LOCKDOWN_DISABLED = process.argv.includes("--no-kiosk");
-const LOCKDOWN_AT_LAUNCH = process.argv.includes("--kiosk");
 let lockedDown = false;
 const TASKBAR_SCRIPT = path.join(__dirname, "taskbar.ps1");
 
@@ -203,7 +204,18 @@ function setLockdown(on) {
 
   lockedDown = on;
   mainWindow.setKiosk(on);
-  mainWindow.setFullScreen(on);
+  // setKiosk already implies full screen on macOS, and calling
+  // setFullScreen unconditionally right after it can toggle the window
+  // straight back out -- the two fight. Only correct it if kiosk didn't
+  // land the window where we asked.
+  if (mainWindow.isFullScreen() !== on) mainWindow.setFullScreen(on);
+  // Close the ordinary ways out of the window. Deliberately NOT
+  // setAlwaysOnTop or focus-stealing on blur: that combination is what
+  // locked a teammate out of his own machine twice and cost two hard
+  // reboots. These only grey out the window's own controls; they never
+  // out-fight the OS.
+  mainWindow.setMinimizable(!on);
+  mainWindow.setClosable(!on);
   // The app menu is already removed at startup (see app.whenReady) and
   // stays removed -- rebuilding Electron's default template just to put
   // Cmd+Q back between rounds isn't worth the surface area.
@@ -257,7 +269,9 @@ function createWindow(startUrl) {
   // and lockdown can now begin at any moment.
   mainWindow.webContents.on("dom-ready", () => injectExitOverlay(mainWindow.webContents));
 
-  if (LOCKDOWN_AT_LAUNCH) mainWindow.once("ready-to-show", () => setLockdown(true));
+  // Locked from the first paint. ready-to-show rather than immediately, so
+  // the window is actually on screen when it goes full-screen.
+  mainWindow.once("ready-to-show", () => setLockdown(true));
 
   {
     // If the UI can't be reached at all, don't leave the user on
@@ -375,6 +389,13 @@ function injectExitOverlay(webContents) {
 function emergencyExit() {
   console.log("Emergency exit shortcut triggered.");
   allowClose = true;
+  // Undo setClosable(false) before quitting. app.quit() goes through the
+  // window's close path, and a window left unclosable can refuse it --
+  // which would defeat the one control that must never fail.
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setClosable(true);
+    mainWindow.setMinimizable(true);
+  }
   restoreTaskbarIfNeeded();
   app.quit();
 }
@@ -485,7 +506,8 @@ ipcMain.handle("kiosk:requestExit", async (_event, enteredPin) => {
   if (EXIT_PIN && enteredPin !== EXIT_PIN) {
     return { success: false, message: "Incorrect PIN." };
   }
-  allowClose = true; // lets the 'close' handler's kiosk-mode block stand down for this quit
+  allowClose = true; // lets the 'close' handler's lockdown block stand down for this quit
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setClosable(true);
   restoreTaskbarIfNeeded();
   app.quit();
   return { success: true };

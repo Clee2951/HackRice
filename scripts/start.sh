@@ -11,9 +11,8 @@
 # and seeing no change is otherwise the most confusing failure in this
 # repo, since nothing errors: you just get the previous build.
 #
-#   ./scripts/start.sh              # normal: locks down during study rounds
+#   ./scripts/start.sh              # normal: locked down from launch
 #   ./scripts/start.sh --no-kiosk   # never lock down (useful while poking at it)
-#   ./scripts/start.sh --kiosk      # lock down immediately, for a demo
 #   ./scripts/start.sh --no-build   # skip the rebuild (a few seconds faster)
 
 set -euo pipefail

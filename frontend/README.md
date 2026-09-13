@@ -30,18 +30,25 @@ What this app actually does when in kiosk mode:
 
 ### When lockdown engages
 
-Not at launch. The renderer calls `kiosk:setLockdown` as the session moves
-through its phases: locked during **study / review / recall**, released for
-**feedback / break / completed**, and released while paused.
+**At launch, and it stays on.** `main.js` locks the window on
+`ready-to-show`; the login screen and the document table are behind it too.
 
-Locking at launch meant a first-time user's first impression — before
-login — was an inescapable full-screen window, which reads as a broken app
-rather than a focus tool. Breaks are also the one time the app should *not*
-hold you there.
+The renderer releases it only where holding someone full-screen would be
+wrong — during a **break**, while **paused**, and once a session is
+**completed**. Study, review, recall and feedback all stay locked.
 
-`--kiosk` forces lockdown from launch; `--no-kiosk` disables it entirely.
-The emergency shortcut and the injected exit button are registered at
-startup regardless, so the way out already exists whenever lockdown begins.
+`--no-kiosk` disables lockdown entirely for development. The emergency
+shortcut and the injected exit button are registered at startup
+regardless, so the way out exists before lockdown ever engages.
+
+While locked, the window is also made non-minimizable and non-closable.
+Both are undone by the emergency exit before it quits — `app.quit()` goes
+through the window's close path, and an unclosable window can refuse it,
+which would defeat the one control that must never fail.
+
+Deliberately **not** done: `setAlwaysOnTop` and stealing focus back on
+`blur`. That combination locked a teammate out of his own machine twice.
+See the safety note above.
 
 Treat all of that as "makes leaving mildly inconvenient," not "makes
 leaving impossible." State this plainly in any demo/report — don't
