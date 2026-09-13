@@ -38,7 +38,6 @@ Five components, and what each one actually owns:
 | `frontend/casino_theme/` | The whole UI: login, the blackjack table of documents, the study room, recall, feedback, tutor chat |
 | `backend/` | The API and all the teaching logic: objective extraction, the session state machine, recall assessment, the tutor, break extension |
 | `presage/` | Camera capture and the stress/drowsiness heuristics; posts a summary per round |
-| `backend-GI/` | **Not wired in.** A teammate's parallel backend — see [docs/integration-status.md](docs/integration-status.md) |
 
 The important design line: **the backend owns the study loop.** The UI
 doesn't run its own timer or decide when a round ends — it reads the phase

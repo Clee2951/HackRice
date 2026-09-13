@@ -1,5 +1,17 @@
 # Presage / SmartSpectra integration notes
 
+> **Note on the script links below.** The exploratory probes this document
+> cites — `capture.mjs`, `test-file.mjs`, `eye-openness-check.mjs`,
+> `head-pose.mjs`, `mouth.mjs` — were removed in the repo cleanup. They were
+> development instruments, not app code: nothing in `session.mjs` imported
+> them. The findings they produced are what this document records, so the
+> reasoning stands on its own. To read the scripts themselves:
+>
+> ```bash
+> git show bfd39ab:presage/capture.mjs      # or any of the others
+> git checkout bfd39ab -- presage/          # to restore them all
+> ```
+
 Project-specific notes for the Presage sponsor-challenge piece. Kept separate from
 `.agents/skills/using-smartspectra/SKILL.md` (that file tracks the upstream repo via
 `npx skills add` and gets overwritten on update — don't edit it directly).

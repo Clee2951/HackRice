@@ -44,32 +44,40 @@ secret key, not placeholders, and that repo is public. Those credentials
 should be rotated in the Vultr dashboard. Nothing in this repo uses them —
 `backend/.env.example` ships blanks and `backend/.env` is gitignored.
 
-## `backend-GI/` — not wired in
+## `backend-GI/` — removed, and how to get it back
 
-A second, parallel copy of the backend from the teammate. It is **not**
-mounted by `backend/main.py` and cannot run as-is: every module imports
-from `backend.*` (e.g. `from backend.api import deps`), so it resolves
-against the real backend's package, not its own. It also assumes a
+A second, parallel copy of the backend from the teammate. It was never
+mounted by `backend/main.py` and could not run as-is: every module imports
+from `backend.*` (e.g. `from backend.api import deps`), so it resolved
+against the real backend's package rather than its own. It also assumed a
 different `User` model than the one the team agreed on — `current_user.id`
 where the schema has `uid`, plus a `backboard_assistant_id` column that
 does not exist.
 
-It is kept rather than deleted because it holds work that hasn't been
-merged yet:
+It was deleted in the repo cleanup so a first-time reader isn't met with
+two backends and no way to tell which one runs. Nothing is lost — it is
+in git history and in the teammate's own repo:
+
+```bash
+git checkout bfd39ab -- backend-GI/        # restore the whole directory
+git show bfd39ab:backend-GI/models/task.py # or read one file
+```
+
+What it held that has **not** been merged, and what each would need:
 
 - **`ai/backboard_client.py`** — a Backboard SDK client (per-user
   assistants, document upload, related-topic queries). An alternative to
   the Gemini path in `backend/ai/gemini_client.py`, not a complement: the
   two answer the same questions. Picking one is a team decision, not a
-  mechanical merge. Note it raises at import if `BACKBOARD_API_KEY` is
+  mechanical merge. Note it raised at import if `BACKBOARD_API_KEY` was
   missing, which would take the whole API down — the same problem the
-  object-storage module had, fixed the same way if it's adopted.
-- **`api/v1/endpoints/tasks.py` + `models/task.py`** — a small to-do
-  list (`id`, `title`, `completed`). Genuinely a new feature rather than a
-  duplicate. It needs two things before it can be mounted: the endpoints
-  have no `get_current_user` dependency, so right now any caller can read
-  and delete anyone's tasks; and `Task` has no owner column, so there is
-  nothing to scope them by. Both are small fixes.
+  object-storage module had, fixed the same way if it is adopted.
+- **`api/v1/endpoints/tasks.py` + `models/task.py`** — a small to-do list
+  (`id`, `title`, `completed`). Genuinely a new feature rather than a
+  duplicate. Two things before it can be mounted: the endpoints had no
+  `get_current_user` dependency, so any caller could read and delete
+  anyone's tasks; and `Task` had no owner column, so there was nothing to
+  scope them by. Both are small fixes.
 - **`api/v1/endpoints/upload.py`** — superseded. It uploaded to Vultr
   *and* Backboard from a temp file; the Vultr half is merged, the
   Backboard half depends on the decision above.
