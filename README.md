@@ -149,13 +149,17 @@ The kiosk starts and stops this itself, per round. Nothing to run by hand.
 > anything about lockdown behaviour — an earlier version hard-locked a
 > real person out of their machine twice.
 
-## Shipping it as a Windows installer
+## Shipping it to other people
 
 The app is self-contained: the Electron shell serves the exported UI
 itself, so an installed copy needs no `next dev`. It still needs a backend
-to talk to — deploy `backend/` somewhere reachable (a Vultr instance is
-the obvious home, since the database and object storage already live
-there) and point the installer at it.
+to talk to, and **that is the part that has to exist before an installer
+is useful to anyone else** — without it, a downloaded app points at
+`127.0.0.1:8000` and fails at login.
+
+See **[docs/deploying.md](docs/deploying.md)** for putting `backend/` on a
+Vultr compute instance, where each secret goes, and why none of them ship
+inside the installer.
 
 ### Publishing a release people can actually download
 
